@@ -453,8 +453,10 @@ class TestAsyncUpload:
     def test_upload_that_never_resolves_is_reported_not_silently_lost(
             self, src, tmp_path):
         class Stuck(FakeDataPanel):
+            def begin_upload(self, folder_id, local_path, name):
+                return {"placed": None, "polls": 0}   # nothing ever lands
             def poll_upload(self, handle):
-                return None                        # forever processing
+                return None                           # forever processing
 
         panel, tr = Stuck(), FakeTransport({"A/Part.f3d": "sha"})
         mpath = str(tmp_path / "m.json")
@@ -463,7 +465,7 @@ class TestAsyncUpload:
                            settle_wait=2.0)
 
         assert rep.added == []
-        assert any("still processing" in msg for _, msg in rep.failures)
+        assert any("unresolved" in msg for _, msg in rep.failures)
 
     def test_lineage_comes_from_our_own_upload_not_a_name_match(
             self, src, tmp_path):
@@ -478,7 +480,10 @@ class TestAsyncUpload:
 
         plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
 
+        # Two files named Part: the scan cannot tell them apart, so the
+        # future is consulted and its lineage wins.
         entry = Manifest.load(mpath).get("A/Part.f3d")
+        assert entry is not None, "gave up instead of asking the future"
         assert entry.lineage != decoy.lineage, "recorded the decoy"
         assert entry.state == PLACED
 
@@ -486,6 +491,8 @@ class TestAsyncUpload:
         from core.datapanel import UploadFailed as UF
 
         class Failing(FakeDataPanel):
+            def begin_upload(self, folder_id, local_path, name):
+                return {"placed": None, "polls": 0}    # nothing lands
             def poll_upload(self, handle):
                 raise UF("upload state 2")
 
@@ -553,15 +560,30 @@ class TestSettleResilience:
         assert rep.added == ["A/Part.f3d"], "should recover and record"
         assert Manifest.load(mpath).get("A/Part.f3d").state == PLACED
 
-    def test_no_folder_enumeration_during_settle(self):
-        """Regression: settle used to list the folder once per pending file
-        per pass, and DataFolder has no refresh() to make that cheap or even
-        valid. It now polls futures instead."""
+    def test_settle_scans_first_and_polls_as_fallback(self):
+        """Measured: a fired file appears in dataFiles at t=0, while
+        uploadState takes 18-50s. So scan, and only poll what the scan
+        misses."""
         import inspect
         body = inspect.getsource(S.settle)
-        assert "poll_upload" in body
-        assert "list_folder" not in body
-        assert "find_by_name" not in body
+        assert "list_folder" in body, "the fast path is the folder scan"
+        assert "poll_upload" in body, "the future is the fallback"
+        assert body.index("list_folder") < body.index("poll_upload")
+
+    def test_nothing_calls_refresh_on_a_folder(self):
+        """DataFolder has no refresh(). Parse the AST rather than grep the
+        text, so a docstring mentioning it cannot pass or fail us."""
+        import ast as _ast
+        import inspect
+        from core import datapanel as DP
+
+        for mod in (S, DP):
+            tree = _ast.parse(inspect.getsource(mod))
+            calls = [n for n in _ast.walk(tree)
+                     if isinstance(n, _ast.Call)
+                     and isinstance(n.func, _ast.Attribute)
+                     and n.func.attr == "refresh"]
+            assert not calls, f"{mod.__name__} calls .refresh()"
 
 
 class TestFusionPollLogic:
@@ -617,3 +639,42 @@ class TestFusionPollLogic:
         h = {"future": self.Future(0, raises=True), "name": "Part"}
         with pytest.raises(UploadFailed):
             self._panel().poll_upload(h)
+
+
+class TestScanIsTheFastPath:
+    """The folder scan is not decoration. Measured: a fired file is in
+    dataFiles at t=0 while uploadState takes 18-50s. If the scan stops being
+    used, everything still works — just many times slower — so assert it is
+    actually doing the resolving."""
+
+    def test_deferred_upload_resolves_without_waiting_for_the_future(
+            self, small_tree, src, tmp_path):
+        polls = {"n": 0}
+
+        class SlowFuture(FakeDataPanel):
+            def poll_upload(self, handle):
+                polls["n"] += 1
+                return None          # the future never helps, as at t=0
+
+        panel, tr = SlowFuture(), FakeTransport(small_tree)
+        plan, rep = S.sync(src, str(tmp_path / "m.json"), panel, tr, F3D,
+                           dry_run=False, settle_wait=5.0)
+
+        assert len(rep.added) == len(small_tree), "scan failed to resolve them"
+        assert polls["n"] == 0, "fell back to the future when the scan sufficed"
+
+    def test_resolution_happens_in_a_single_pass(self, small_tree, src, tmp_path):
+        passes = {"n": 0}
+
+        class Counting(FakeDataPanel):
+            def list_folder(self, folder_id):
+                passes["n"] += 1
+                return super().list_folder(folder_id)
+
+        panel, tr = Counting(), FakeTransport(small_tree)
+        S.sync(src, str(tmp_path / "m.json"), panel, tr, F3D, dry_run=False)
+
+        folders = {p.rsplit("/", 1)[0] for p in small_tree}
+        assert passes["n"] <= len(folders) + 1, (
+            f"{passes['n']} listings for {len(folders)} folders — "
+            "should resolve on the first pass")

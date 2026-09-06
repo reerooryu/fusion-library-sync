@@ -86,53 +86,106 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel,
 
 def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
            report: Report, manifest_path: str, handles: Dict[str, object],
-           on_progress: Optional[Progress], max_wait: float) -> None:
-    """Poll the upload futures until each resolves.
+           on_progress: Optional[Progress], max_wait: float,
+           mapped_by_path: Optional[Dict[str, object]] = None) -> None:
+    """Resolve fired uploads into recorded lineages.
 
-    Measured 6 Sep 2026: five files fired in 0.17s reached Finished at 18.8s
-    and 50.2s. They upload concurrently, so poll them all rather than waiting
-    on each in turn - and poll gently, because hammering the event loop is
-    what starves the very work being waited on.
+    Measured 6 Sep 2026: a fired file appears in folder.dataFiles immediately
+    - first_appeared_s was 0.0 for all five - and the collection is live, so
+    no refresh is needed (DataFolder has no refresh() anyway). Meanwhile
+    uploadState took 18-50s to leave Processing.
+
+    So: scan the folder first, which is instant. Fall back to polling the
+    future only for anything the scan does not find.
     """
-    deadline = time.time() + max_wait
     pending = dict(handles)
+    deadline = time.time() + max_wait
     total = len(pending)
+    first_pass = True
 
     while pending and time.time() < deadline:
-        done_now = []
+        # --- fast path: one live listing per folder, no refresh
+        by_folder: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
+        for repo_path in pending:
+            pp = (mapped_by_path or {}).get(repo_path)
+            if pp is None:
+                try:
+                    pp = P.map_path(repo_path)
+                except P.PathError:
+                    manifest.drop(repo_path)
+                    continue
+            by_folder.setdefault(pp.folders, []).append((repo_path, pp.name))
+
+        for folders, wanted in by_folder.items():
+            try:
+                folder = panel.ensure_folder(folders)
+                present: Dict[str, List] = {}
+                for f in panel.list_folder(folder):
+                    present.setdefault(f.name, []).append(f)
+            except Exception as exc:                  # noqa: BLE001
+                if first_pass:
+                    report.failures.append(
+                        (folders and "/".join(folders) or "<root>",
+                         f"could not list folder: {type(exc).__name__}: {exc}"))
+                continue
+
+            for repo_path, name in wanted:
+                hits = present.get(name, [])
+                if len(hits) == 1:
+                    manifest.record(repo_path, selected.get(repo_path, ""),
+                                    hits[0].lineage, hits[0].version, state=PLACED)
+                    report.added.append(repo_path)
+                    pending.pop(repo_path, None)
+                elif len(hits) > 1:
+                    # Ambiguous by name - so ask the future, which knows which
+                    # file WE created. Only give up if it cannot tell us.
+                    try:
+                        placed = panel.poll_upload(pending[repo_path])
+                    except UploadFailed as exc:
+                        report.failures.append((repo_path, str(exc)))
+                        manifest.drop(repo_path)
+                        pending.pop(repo_path, None)
+                        continue
+                    if placed is not None:
+                        manifest.record(repo_path, selected.get(repo_path, ""),
+                                        placed.lineage, placed.version, state=PLACED)
+                        report.added.append(repo_path)
+                        pending.pop(repo_path, None)
+                    elif time.time() >= deadline - 1:
+                        report.failures.append(
+                            (repo_path,
+                             f"{len(hits)} files named {name!r}, upload did not identify itself"))
+                        manifest.drop(repo_path)
+                        pending.pop(repo_path, None)
+
+        # --- fallback: ask the future about whatever the scan missed
         for repo_path, handle in list(pending.items()):
             try:
                 placed = panel.poll_upload(handle)
             except UploadFailed as exc:
                 report.failures.append((repo_path, str(exc)))
                 manifest.drop(repo_path)
-                done_now.append(repo_path)
+                pending.pop(repo_path, None)
                 continue
-            if placed is None:
-                continue                      # still in flight
-            manifest.record(repo_path, selected.get(repo_path, ""),
-                            placed.lineage, placed.version, state=PLACED,
-                            placed_name=placed.name if placed.name else None)
-            report.added.append(repo_path)
-            done_now.append(repo_path)
+            if placed is not None:
+                manifest.record(repo_path, selected.get(repo_path, ""),
+                                placed.lineage, placed.version, state=PLACED)
+                report.added.append(repo_path)
+                pending.pop(repo_path, None)
 
-        for repo_path in done_now:
-            pending.pop(repo_path, None)
-
-        if done_now:
-            manifest.save(manifest_path)
-
+        manifest.save(manifest_path)
         done = total - len(pending)
         if on_progress:
             if on_progress(done, total, f"Finishing {done}/{total}") is False:
                 raise gh.Cancelled("cancelled while finishing")
+        first_pass = False
         if not pending:
             break
         time.sleep(1.0)
 
     for repo_path in pending:
         report.failures.append(
-            (repo_path, f"upload still processing after {max_wait:.0f}s"))
+            (repo_path, f"upload unresolved after {max_wait:.0f}s"))
 
 
 def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
@@ -208,7 +261,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
 
         if handles:
             settle(manifest, panel, selected, report, manifest_path,
-                   handles, on_progress, settle_wait)
+                   handles, on_progress, settle_wait,
+                   mapped_by_path={pp.repo_path: pp for pp in mapped})
 
         manifest.synced_commit = commit
         manifest.save(manifest_path)
