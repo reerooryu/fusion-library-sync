@@ -30,6 +30,8 @@ class UploadFailed(RuntimeError):
 
 class DataPanel(Protocol):
     def ensure_folder(self, folders: Sequence[str]) -> str: ...
+    def begin_upload(self, folder_id: str, local_path: str,
+                     name: str) -> Optional[PlacedFile]: ...
     def upload(self, folder_id: str, local_path: str, name: str,
                on_wait=None) -> PlacedFile: ...
     def list_folder(self, folder_id: str) -> List[PlacedFile]: ...
@@ -42,7 +44,9 @@ class FakeDataPanel:
     """In-memory Data Panel with Fusion's real duplicate behaviour."""
 
     def __init__(self, fail_on: Optional[Sequence[str]] = None,
-                 crash_after: Optional[int] = None):
+                 crash_after: Optional[int] = None,
+                 deferred: bool = False):
+        self.deferred = deferred
         self.folders: Dict[Tuple[str, ...], str] = {(): "folder:root"}
         self.contents: Dict[str, List[PlacedFile]] = {"folder:root": []}
         self._ids = itertools.count(1)
@@ -72,6 +76,13 @@ class FakeDataPanel:
         pf = PlacedFile(name=name, lineage=f"urn:adsk.wipprod:dm.lineage:{next(self._ids)}")
         self.contents[folder_id].append(pf)
         return pf
+
+    def begin_upload(self, folder_id: str, local_path: str,
+                     name: str) -> Optional[PlacedFile]:
+        """Start an upload. Returns None when completion is asynchronous -
+        the caller must reconcile against the folder afterwards."""
+        placed = self.upload(folder_id, local_path, name)
+        return None if self.deferred else placed
 
     def list_folder(self, folder_id: str) -> List[PlacedFile]:
         return list(self.contents.get(folder_id, []))
@@ -130,8 +141,18 @@ class FusionDataPanel:
         self._cache[key] = folder
         return folder
 
+    def begin_upload(self, folder, local_path: str, name: str):
+        """Fire and return. Do NOT block on uploadState: Fusion completes the
+        upload on the same event loop we would be blocking, so waiting makes
+        a 10-second upload take minutes and eventually time out, while the
+        file has in fact already landed. Resolution happens later, by looking
+        at the folder."""
+        folder.uploadFile(local_path)
+        return None
+
     def upload(self, folder, local_path: str, name: str,
                on_wait=None) -> PlacedFile:
+        """Blocking variant. Kept for single uploads; not used by sync."""
         import adsk.core
         future = folder.uploadFile(local_path)
         # Asynchronous: 0 = Processing, 1 = Finished, 2 = Failed.

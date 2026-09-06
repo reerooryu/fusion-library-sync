@@ -368,14 +368,23 @@ class TestAdopt:
 
 
 class TestEstimates:
-    """The confirm dialog must be able to state cost, not just a file count."""
+    """The confirm dialog must state cost, not just a file count."""
 
-    def test_bootstrap_estimate_is_stated_in_hours(self):
+    def test_bootstrap_states_files_size_and_time(self):
         text = gh.estimate(1198, 2_362_232_012)
-        assert "1198 file" in text and "2.2 GB" in text and "hours" in text
+        assert "1198 file" in text
+        assert "2.2 GB" in text, "size is the part that surprises people"
+        assert "about" in text
 
-    def test_small_delta_reads_in_minutes(self):
-        assert "min" in gh.estimate(25)
+    def test_estimate_grows_with_the_work(self):
+        import re
+
+        def secs(n):
+            t = gh.estimate(n)
+            v = float(re.search(r"about ([\d.]+)", t).group(1))
+            return v * (60 if " min" in t else 3600 if " hours" in t else 1)
+
+        assert secs(2) < secs(45) < secs(1198)
 
     def test_threshold_marks_a_bootstrap(self):
         assert 1198 >= gh.TARBALL_THRESHOLD
@@ -402,3 +411,78 @@ class TestCancel:
 
         assert panel.total_files == 0
         assert panel.duplicates() == {}
+
+
+class TestAsyncUpload:
+    """Fusion completes uploads on the event loop, so a fired upload lands in
+    the folder while its future still reports Processing. Blocking on that
+    future is what turned a ~10s upload into a 300s timeout."""
+
+    def test_deferred_uploads_are_resolved_by_looking_at_the_folder(
+            self, small_tree, src, tmp_path):
+        panel = FakeDataPanel(deferred=True)      # begin_upload returns None
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+
+        assert len(rep.added) == len(small_tree)
+        assert panel.total_files == len(small_tree)
+        assert panel.duplicates() == {}
+        m = Manifest.load(mpath)
+        assert m.in_state(INFLIGHT) == {}, "everything must resolve to placed"
+        assert all(e.lineage for e in m.files.values()), "lineage must be recorded"
+
+    def test_deferred_sync_is_still_idempotent(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel(deferred=True)
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+
+        S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+        n = panel.total_files
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+
+        assert plan.is_empty
+        assert panel.total_files == n
+        assert panel.duplicates() == {}
+
+    def test_upload_that_never_appears_is_reported_not_silently_lost(
+            self, src, tmp_path):
+        class Vanishing(FakeDataPanel):
+            def begin_upload(self, folder_id, local_path, name):
+                return None                        # fired, never lands
+
+        panel, tr = Vanishing(), FakeTransport({"A/Part.f3d": "sha"})
+        mpath = str(tmp_path / "m.json")
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False,
+                           settle_wait=2.0)
+
+        assert rep.added == []
+        assert any("did not appear" in msg for _, msg in rep.failures)
+        assert panel.total_files == 0
+
+    def test_settle_flags_a_duplicate_rather_than_recording_one(self, src, tmp_path):
+        class Doubling(FakeDataPanel):
+            def begin_upload(self, folder_id, local_path, name):
+                self.upload(folder_id, local_path, name)
+                self.upload(folder_id, local_path, name)   # lands twice
+                return None
+
+        panel, tr = Doubling(), FakeTransport({"A/Part.f3d": "sha"})
+        mpath = str(tmp_path / "m.json")
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False,
+                           settle_wait=2.0)
+
+        assert any("2 files named" in msg for _, msg in rep.failures)
+        assert "A/Part.f3d" not in Manifest.load(mpath)
+
+    def test_no_blocking_wait_on_the_future(self):
+        """Regression guard for the actual bug: sync must not call the
+        blocking upload() path."""
+        import inspect
+        src_text = inspect.getsource(S.apply_plan)
+        assert "begin_upload" in src_text
+        assert "on_wait" not in src_text
+        assert ".upload(" not in src_text

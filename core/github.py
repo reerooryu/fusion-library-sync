@@ -154,9 +154,10 @@ def human_duration(seconds: float) -> str:
     return f"{seconds / 3600:.1f} hours"
 
 
-# Measured against a live project: 8-18 s for a 155 KB upload. Deliberately
-# pessimistic - a surprise that is faster than promised is not a bug report.
-SECONDS_PER_UPLOAD = 12.0
+# Uploads are fired, not waited on: the earlier 8-18 s figure was the cost of
+# blocking on a future that Fusion cannot resolve while blocked, not the cost
+# of the upload. This covers download plus fire plus settling.
+SECONDS_PER_UPLOAD = 2.0
 
 
 def estimate(n_files: int, total_bytes: int = 0) -> str:

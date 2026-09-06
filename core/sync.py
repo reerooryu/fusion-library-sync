@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import shutil
 import tempfile
+import time
 
 from . import github as gh
 from . import paths as P
@@ -83,13 +84,60 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel,
                             "resolve by hand before syncing"))
 
 
+def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
+           report: Report, manifest_path: str, fired: Sequence[str],
+           on_progress: Optional[Progress], max_wait: float) -> None:
+    """Wait for fired uploads to appear in the Data Panel, then record them.
+
+    Fusion finishes an upload on the event loop, so the only reliable signal
+    that a file arrived is the folder itself. Poll it, do not poll the future.
+    """
+    deadline = time.time() + max_wait
+    pending = list(fired)
+    total = len(pending)
+
+    while pending and time.time() < deadline:
+        still: List[str] = []
+        for repo_path in pending:
+            try:
+                pp = P.map_path(repo_path)
+            except P.PathError:
+                manifest.drop(repo_path)
+                continue
+            folder = panel.ensure_folder(pp.folders)
+            hits = panel.find_by_name(folder, pp.name)
+            if len(hits) == 1:
+                manifest.record(repo_path, selected.get(repo_path, ""),
+                                hits[0].lineage, hits[0].version, state=PLACED)
+            elif len(hits) > 1:
+                report.failures.append(
+                    (repo_path, f"{len(hits)} files named {pp.name!r} after upload"))
+                manifest.drop(repo_path)
+            else:
+                still.append(repo_path)
+
+        manifest.save(manifest_path)
+        done = total - len(still)
+        if on_progress:
+            if on_progress(done, total, f"Finishing {done}/{total}") is False:
+                raise gh.Cancelled("cancelled while finishing")
+        if not still:
+            break
+        pending = still
+        time.sleep(1.0)
+
+    for repo_path in pending:
+        report.failures.append((repo_path, "upload did not appear in time"))
+
+
 def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                manifest: Manifest, panel: DataPanel, manifest_path: str,
                transport: gh.Transport, commit: Optional[str] = None,
                workdir: Optional[str] = None,
                on_progress: Optional[Progress] = None,
                dry_run: bool = False,
-               threshold: int = gh.TARBALL_THRESHOLD) -> Report:
+               threshold: int = gh.TARBALL_THRESHOLD,
+               settle_wait: float = 300.0) -> Report:
     """Additive half of a plan. Writes nothing when dry_run."""
     report = Report(
         skipped_changed=list(plan.change),
@@ -126,6 +174,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         report.failures.extend(fetch_failures)
 
         total = len(mapped)
+        fired: List[str] = []
         for i, pp in enumerate(mapped, 1):
             local = fetched.get(pp.repo_path)
             if not local:
@@ -139,36 +188,38 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
             manifest.mark_inflight(pp.repo_path, placed_name=pp.name)
             manifest.save(manifest_path)
 
-            # Announce before the upload, not after: a single upload takes
-            # 8-18s, and a bar that only moves on completion looks hung.
             if on_progress:
-                on_progress(i - 1, total, f"Uploading {i}/{total}  {pp.name}")
-
-            def beat(elapsed, _i=i, _name=pp.name):
-                if on_progress:
-                    on_progress(_i - 1, total,
-                                f"Uploading {_i}/{total}  {_name}  ({elapsed:.0f}s)")
+                if on_progress(i - 1, total,
+                               f"Uploading {i}/{total}  {pp.name}") is False:
+                    raise gh.Cancelled("cancelled during upload")
 
             try:
-                placed = panel.upload(folder, local, pp.name, on_wait=beat)
-            except TypeError:
-                placed = panel.upload(folder, local, pp.name)
+                placed = panel.begin_upload(folder, local, pp.name)
             except UploadFailed as exc:
                 manifest.drop(pp.repo_path)
                 manifest.save(manifest_path)
                 report.failures.append((pp.repo_path, str(exc)))
                 continue
 
-            if placed.name != pp.name:
-                report.renamed.append((pp.repo_path, placed.name))
+            if placed is None:
+                # Asynchronous: the entry stays inflight and is resolved by
+                # settle() below, which looks at the folder rather than at a
+                # future that will not report Finished while we block.
+                fired.append(pp.repo_path)
+            else:
+                if placed.name != pp.name:
+                    report.renamed.append((pp.repo_path, placed.name))
+                manifest.record(pp.repo_path, selected[pp.repo_path],
+                                placed.lineage, placed.version, state=PLACED,
+                                placed_name=placed.name if placed.name != pp.name else None)
+                manifest.save(manifest_path)
+                report.added.append(pp.repo_path)
 
-            manifest.record(pp.repo_path, selected[pp.repo_path], placed.lineage,
-                            placed.version, state=PLACED,
-                            placed_name=placed.name if placed.name != pp.name else None)
-            manifest.save(manifest_path)      # after every file, not at the end
-            report.added.append(pp.repo_path)
-            if on_progress:
-                on_progress(i, total, f"Uploaded {i}/{total}")
+        if fired:
+            settle(manifest, panel, selected, report, manifest_path,
+                   fired, on_progress, settle_wait)
+            report.added.extend(p for p in fired
+                                if manifest.get(p) and manifest.get(p).state == PLACED)
 
         manifest.synced_commit = commit
         manifest.save(manifest_path)
@@ -185,7 +236,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          exclude: Sequence[str] = (),
          dry_run: bool = True,
          on_progress: Optional[Progress] = None,
-         threshold: int = gh.TARBALL_THRESHOLD) -> Tuple[PL.Plan, Report]:
+         threshold: int = gh.TARBALL_THRESHOLD,
+         settle_wait: float = 300.0) -> Tuple[PL.Plan, Report]:
     """One full cycle. Defaults to dry_run."""
     transport = transport or gh.UrllibTransport()
 
@@ -204,7 +256,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     plan = PL.diff(selected, manifest)
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
                         transport, commit, on_progress=on_progress,
-                        dry_run=dry_run, threshold=threshold)
+                        dry_run=dry_run, threshold=threshold,
+                        settle_wait=settle_wait)
     report.reconciled = pre.reconciled + report.reconciled
     report.failures = pre.failures + report.failures
     return plan, report

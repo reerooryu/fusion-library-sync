@@ -64,9 +64,8 @@ libraries by editing `config.json` beside the add-in.
 
 ## Use
 
-**Start narrow.** A first sync of the whole VEX library is 2.2 GB and roughly
-four hours of uploads, during which Fusion is largely unresponsive. Set
-`include` to one folder, confirm it works, then widen:
+**Start narrow.** A first sync of the whole VEX library is a 2.2 GB download.
+Set `include` to one folder, confirm it works, then widen:
 
 ```json
 "include": ["Hardware/Screws/**/*.f3d"]
