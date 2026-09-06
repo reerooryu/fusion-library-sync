@@ -212,15 +212,16 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
 
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = True
-    progress.show("Detent", "%v of %m - %p%%", 0, max(len(plan.add), 1))
+    progress.show("Detent", "Starting...", 0, max(len(plan.add), 1))
 
     def on_progress(i, total, label):
         # Returning False asks core to abort; it is how cancel reaches a
-        # long download.
+        # long download or a slow upload.
         if progress.wasCancelled:
             return False
-        progress.message = f"{label}  (%v of %m)" if label else "%v of %m - %p%%"
-        progress.progressValue = min(i, total)
+        if label:
+            progress.message = label.replace("%", "%%")
+        progress.progressValue = min(max(i, 0), total)
         adsk.doEvents()
         return True
 

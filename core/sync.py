@@ -113,10 +113,15 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     workdir = workdir or tempfile.mkdtemp(prefix="detent-")
     try:
         wanted = [pp.repo_path for pp in mapped]
+
+        def dl_progress(i, n, label):
+            if on_progress:
+                return on_progress(i, n, f"Downloading {i}/{n}")
+            return None
+
         fetched, fetch_failures = gh.fetch_files(
             src, wanted, workdir, transport, commit,
-            on_progress=lambda i, n, p: on_progress(i, n, p) if on_progress else None,
-            threshold=threshold,
+            on_progress=dl_progress, threshold=threshold,
         )
         report.failures.extend(fetch_failures)
 
@@ -134,7 +139,19 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
             manifest.mark_inflight(pp.repo_path, placed_name=pp.name)
             manifest.save(manifest_path)
 
+            # Announce before the upload, not after: a single upload takes
+            # 8-18s, and a bar that only moves on completion looks hung.
+            if on_progress:
+                on_progress(i - 1, total, f"Uploading {i}/{total}  {pp.name}")
+
+            def beat(elapsed, _i=i, _name=pp.name):
+                if on_progress:
+                    on_progress(_i - 1, total,
+                                f"Uploading {_i}/{total}  {_name}  ({elapsed:.0f}s)")
+
             try:
+                placed = panel.upload(folder, local, pp.name, on_wait=beat)
+            except TypeError:
                 placed = panel.upload(folder, local, pp.name)
             except UploadFailed as exc:
                 manifest.drop(pp.repo_path)
@@ -150,9 +167,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                             placed_name=placed.name if placed.name != pp.name else None)
             manifest.save(manifest_path)      # after every file, not at the end
             report.added.append(pp.repo_path)
-
             if on_progress:
-                on_progress(i, total, pp.name)
+                on_progress(i, total, f"Uploaded {i}/{total}")
 
         manifest.synced_commit = commit
         manifest.save(manifest_path)

@@ -30,7 +30,8 @@ class UploadFailed(RuntimeError):
 
 class DataPanel(Protocol):
     def ensure_folder(self, folders: Sequence[str]) -> str: ...
-    def upload(self, folder_id: str, local_path: str, name: str) -> PlacedFile: ...
+    def upload(self, folder_id: str, local_path: str, name: str,
+               on_wait=None) -> PlacedFile: ...
     def list_folder(self, folder_id: str) -> List[PlacedFile]: ...
     def find_by_name(self, folder_id: str, name: str) -> List[PlacedFile]: ...
     def scan(self) -> Dict[Tuple[str, ...], List[PlacedFile]]: ...
@@ -59,7 +60,8 @@ class FakeDataPanel:
                 self.contents[fid] = []
         return self.folders[key]
 
-    def upload(self, folder_id: str, local_path: str, name: str) -> PlacedFile:
+    def upload(self, folder_id: str, local_path: str, name: str,
+               on_wait=None) -> PlacedFile:
         if name in self.fail_on:
             raise UploadFailed(f"simulated failure for {name!r}")
         if self.crash_after is not None and len(self.uploads) >= self.crash_after:
@@ -128,16 +130,20 @@ class FusionDataPanel:
         self._cache[key] = folder
         return folder
 
-    def upload(self, folder, local_path: str, name: str) -> PlacedFile:
+    def upload(self, folder, local_path: str, name: str,
+               on_wait=None) -> PlacedFile:
         import adsk.core
         future = folder.uploadFile(local_path)
         # Asynchronous: 0 = Processing, 1 = Finished, 2 = Failed.
         import time
-        deadline = time.time() + 300
+        started = time.time()
+        deadline = started + 300
         while time.time() < deadline:
             state = future.uploadState
             if state != 0:
                 break
+            if on_wait:
+                on_wait(time.time() - started)
             adsk.doEvents()
             time.sleep(0.4)
         else:
