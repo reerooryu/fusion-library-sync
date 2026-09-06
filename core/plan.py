@@ -1,8 +1,4 @@
-"""Diff a remote tree against the manifest.
-
-Four sets, one write path. Only `add` is acted on in Phase 1; everything
-else is reported so a human decides.
-"""
+"""Diff a remote tree against the manifest. Only `add` is ever written."""
 
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -24,7 +20,6 @@ def _matches(path: str, patterns: Sequence[str]) -> bool:
 def select(tree: Mapping[str, str],
            include: Sequence[str] = ("**/*",),
            exclude: Sequence[str] = ()) -> Dict[str, str]:
-    """Filter a {repo_path: blob} tree by include/exclude globs."""
     out = {}
     for path, blob in tree.items():
         if include and not _matches(path, include):
@@ -44,11 +39,6 @@ class Plan:
     inflight: List[str] = field(default_factory=list)    # interrupted, needs reconcile
 
     @property
-    def actionable(self) -> List[str]:
-        """The only paths Phase 1 will write."""
-        return self.add
-
-    @property
     def is_empty(self) -> bool:
         return not (self.add or self.change or self.orphan
                     or self.unverified or self.inflight)
@@ -62,11 +52,8 @@ class Plan:
 
 
 def diff(remote: Mapping[str, str], manifest: Optional[Manifest]) -> Plan:
-    """Compare a filtered remote tree against what we believe we placed.
-
-    `remote` must already be filtered by select(); diffing an unfiltered tree
-    against a filtered manifest would report every excluded file as an orphan.
-    """
+    """`remote` must already be filtered by select(), or excluded files read
+    as orphans."""
     plan = Plan()
     files = manifest.files if manifest else {}
 

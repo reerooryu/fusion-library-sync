@@ -1,14 +1,9 @@
 """Repo path -> Data Panel location.
 
-Rules (spec section 06):
-  1. Preserve names verbatim wherever Fusion accepts them.
-  2. Never normalise Unicode - folding U+201D to '"' would make the manifest
-     path and the repo path disagree, and every later sync would see a
-     phantom change.
-  3. Strip the extension for the display name; key the manifest on the repo
-     path *including* extension.
-  4. If a name must be altered to be accepted, say so. A silent rename is a
-     future duplicate.
+Names are preserved verbatim and Unicode is never normalised: folding U+201D
+to a straight quote would make the manifest key stop matching the tree, so
+every later sync would see a phantom change. Any alteration is reported - a
+silent rename is a future duplicate.
 """
 
 from dataclasses import dataclass
@@ -46,28 +41,20 @@ class PathError(ValueError):
 
 
 def _clean_segment(seg: str, where: str, notes: List[str]) -> str:
-    """Only alterations Fusion actually forces. Everything else is preserved."""
+    """Only alterations Fusion actually forces."""
     original = seg
-
     if any(ch in _ILLEGAL for ch in seg):
         raise PathError(f"{where}: illegal character in segment {seg!r}")
 
-    # Control characters cannot survive a round trip.
     if any(unicodedata.category(ch) == 'Cc' for ch in seg):
         seg = ''.join(ch for ch in seg if unicodedata.category(ch) != 'Cc')
         notes.append(f"{where}: stripped control characters")
 
-    # Trailing dots and spaces are silently dropped by some hosts; drop them
-    # ourselves so the manifest records what actually landed.
+    # Some hosts drop these silently; do it ourselves so the manifest is honest.
     stripped = seg.rstrip(' .')
     if stripped != seg:
         seg = stripped
         notes.append(f"{where}: trimmed trailing space/period")
-
-    # A leading space is preserved by Fusion but confuses sorting; leave it,
-    # only flag it. NOTE: a leading '!' is legal and common in this corpus.
-    if original.startswith(' '):
-        notes.append(f"{where}: leading space kept verbatim")
 
     if not seg:
         raise PathError(f"{where}: segment empty after cleaning ({original!r})")
@@ -78,10 +65,7 @@ def _clean_segment(seg: str, where: str, notes: List[str]) -> str:
 
 
 def map_path(repo_path: str, subpath: str = "") -> PanelPath:
-    """Map a repository path to its Data Panel location.
-
-    `subpath` is stripped from the front so a source can sync a subtree.
-    """
+    """`subpath` is stripped from the front so a source can sync a subtree."""
     if not repo_path or repo_path.endswith('/'):
         raise PathError(f"not a file path: {repo_path!r}")
 
@@ -105,8 +89,7 @@ def map_path(repo_path: str, subpath: str = "") -> PanelPath:
         _clean_segment(p, f"folder {i + 1}", notes) for i, p in enumerate(folder_parts)
     )
 
-    # Extension goes; Fusion supplies its own. The manifest still keys on
-    # repo_path, so this is display-only.
+    # Fusion supplies its own extension; the manifest still keys on repo_path.
     stem, dot, _ext = filename.rpartition('.')
     display = stem if dot else filename
     display = _clean_segment(display, "filename", notes)
@@ -123,16 +106,9 @@ def map_path(repo_path: str, subpath: str = "") -> PanelPath:
 
 
 def map_all(repo_paths: Sequence[str], subpath: str = ""):
-    """Map many paths, collecting failures rather than raising on the first.
-
-    Returns (mapped, errors, collisions):
-      mapped     - list[PanelPath]
-      errors     - list[(repo_path, message)]
-      collisions - dict[panel_path, list[repo_path]] where >1 file would land
-                   in the same place. These MUST block a sync: two repo files
-                   mapping to one Data Panel name is exactly how a library
-                   silently loses a part.
-    """
+    """Returns (mapped, errors, collisions). A collision - two repo files
+    landing on one Data Panel name - must block the sync: that is how a
+    library silently loses a part."""
     mapped: List[PanelPath] = []
     errors: List[Tuple[str, str]] = []
     seen: dict = {}

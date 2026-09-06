@@ -1,10 +1,7 @@
 """GitHub source: resolve a ref, read its tree, fetch blobs.
 
-Transport is injected so every code path here is testable without network.
-
-Two download strategies, because bootstrap and update are different problems:
-  bootstrap (hundreds of files) - one tarball from codeload
-  delta     (tens of files)     - individual raw.githubusercontent requests
+Transport is injected so every path here is testable offline. Bootstrap pulls
+one tarball; deltas fetch individual files.
 """
 
 from dataclasses import dataclass
@@ -56,28 +53,8 @@ class GitHubError(RuntimeError):
 
 
 class TreeTruncated(GitHubError):
-    """The repo is too large for one recursive tree call.
-
-    GitHub silently truncates rather than failing, so this MUST be checked.
-    A truncated tree read as complete would report every unlisted file as an
-    orphan and every later file as new.
-    """
-
-
-@dataclass
-class RateLimit:
-    limit: int
-    remaining: int
-    reset: int
-
-    @classmethod
-    def from_headers(cls, h: Dict[str, str]) -> Optional["RateLimit"]:
-        try:
-            return cls(int(h["X-RateLimit-Limit"]),
-                       int(h["X-RateLimit-Remaining"]),
-                       int(h["X-RateLimit-Reset"]))
-        except (KeyError, ValueError, TypeError):
-            return None
+    """GitHub truncates large trees silently. Read as complete, a truncated
+    tree reports every unlisted file as an orphan."""
 
 
 @dataclass
@@ -85,14 +62,6 @@ class Source:
     repo: str                 # "owner/name"
     ref: str = "main"
     subpath: str = ""
-
-    @property
-    def owner(self) -> str:
-        return self.repo.split("/", 1)[0]
-
-    @property
-    def name(self) -> str:
-        return self.repo.split("/", 1)[1]
 
 
 def parse_tree(payload: dict) -> Dict[str, str]:
@@ -119,16 +88,16 @@ def resolve_commit(src: Source, transport: Transport) -> str:
 
 
 def fetch_tree(src: Source, transport: Transport,
-               commit: Optional[str] = None) -> Tuple[Dict[str, str], Optional[RateLimit]]:
+               commit: Optional[str] = None) -> Dict[str, str]:
     """One request for every path and blob SHA in the repo."""
-    ref = commit or src.ref
-    url = f"{API}/repos/{src.repo}/git/trees/{urllib.parse.quote(ref)}?recursive=1"
-    payload, headers = transport.get_json(url)
+    url = (f"{API}/repos/{src.repo}/git/trees/"
+           f"{urllib.parse.quote(commit or src.ref)}?recursive=1")
+    payload, _ = transport.get_json(url)
     tree = parse_tree(payload)
     if src.subpath:
         prefix = src.subpath.strip("/") + "/"
         tree = {p: s for p, s in tree.items() if p.startswith(prefix)}
-    return tree, RateLimit.from_headers(headers)
+    return tree
 
 
 def raw_url(src: Source, path: str, commit: Optional[str] = None) -> str:
@@ -139,7 +108,7 @@ def raw_url(src: Source, path: str, commit: Optional[str] = None) -> str:
 
 def fetch_blob(src: Source, path: str, transport: Transport,
                commit: Optional[str] = None) -> bytes:
-    """Single file. raw.githubusercontent is not counted against the API limit."""
+    """raw.githubusercontent is not counted against the API rate limit."""
     return transport.get_bytes(raw_url(src, path, commit))
 
 
@@ -167,11 +136,8 @@ def _safe_members(tar: tarfile.TarFile, dest: str):
 
 def extract_tarball(data: bytes, dest: str,
                     wanted: Optional[Sequence[str]] = None) -> Dict[str, str]:
-    """Unpack a codeload tarball, stripping its top-level directory.
-
-    Returns {repo_path: local_file_path} for extracted files. `wanted` limits
-    extraction to those repo paths.
-    """
+    """Unpack a codeload tarball, stripping its top-level dir.
+    Returns {repo_path: local_path}."""
     want = set(wanted) if wanted is not None else None
     written: Dict[str, str] = {}
     os.makedirs(dest, exist_ok=True)
@@ -199,10 +165,7 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 transport: Transport, commit: Optional[str] = None,
                 on_progress: Optional[Callable[[int, int, str], None]] = None,
                 threshold: int = TARBALL_THRESHOLD) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
-    """Fetch `paths` into `dest`, picking a strategy by count.
-
-    Returns (fetched, failures). One unreachable file never aborts the run.
-    """
+    """Returns (fetched, failures). One unreachable file never aborts a run."""
     paths = list(paths)
     fetched: Dict[str, str] = {}
     failures: List[Tuple[str, str]] = []

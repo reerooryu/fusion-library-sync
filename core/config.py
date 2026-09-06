@@ -1,8 +1,7 @@
 """Config: which libraries to sync, and where they go.
 
-JSON on disk beside the add-in. v0.1 has no editor - the dialog picks the
-project and the rest is hand-edited. Ships with VEX-CAD preconfigured so the
-common case never involves pasting a repo URL.
+JSON beside the add-in, hand-edited in v0.1. Ships with VEX-CAD preconfigured
+so the common case never involves pasting a repo URL.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -25,7 +24,7 @@ class ConfigError(ValueError):
 
 
 def normalise_repo(value: str) -> str:
-    """Accept 'owner/name' or any github.com URL people actually paste."""
+    """Accept 'owner/name' or any github.com URL people paste."""
     v = (value or "").strip()
     if not v:
         raise ConfigError("empty repository")
@@ -46,7 +45,6 @@ class SourceConfig:
     subpath: str = ""
     include: List[str] = field(default_factory=lambda: ["**/*.f3d"])
     exclude: List[str] = field(default_factory=list)
-    project_id: Optional[str] = None      # resolved once, then stored
     folder_path: str = ""                 # below the project root
 
     def __post_init__(self):
@@ -114,7 +112,7 @@ class Config:
 
     @classmethod
     def load_or_create(cls, path: str) -> "Config":
-        """First launch writes the shipped defaults so the file is editable."""
+        """First launch writes the defaults so the file is there to edit."""
         if os.path.exists(path):
             return cls.load(path)
         cfg = default_config()

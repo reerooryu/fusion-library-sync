@@ -1,9 +1,6 @@
-"""Lockstep - incremental Git-to-Fusion library sync.
+"""Add-in entry point: Utilities > ADD-INS > Sync Library.
 
-Add-in entry point. Adds a Sync Library button to Utilities > ADD-INS.
-
-All the risky logic lives in core/ and is tested without Fusion. This file is
-presentation: build a dialog, show a plan, ask, then hand off.
+Presentation only. The risky logic lives in core/ and is tested without Fusion.
 """
 
 import os
@@ -149,10 +146,6 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 return
 
             source.folder_path = folder_path
-            try:
-                source.project_id = project.id
-            except Exception:                       # noqa: BLE001
-                pass
             cfg.save(CONFIG_PATH)
 
             os.makedirs(STATE_DIR, exist_ok=True)

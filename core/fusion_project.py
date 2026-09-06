@@ -1,12 +1,8 @@
 """Resolving a Fusion project, defensively.
 
 `app.data.activeProject` raises InternalValidationError when the Data Panel
-has not been initialised in the session - the data model is lazy and a script
-touching it first hits an empty id. Observed on 6 Sep 2026; waking the panel
-alone did not fix it, and the activeDocument fallback is what worked.
-
-Kept separate from datapanel.py so the failure modes stay documented and
-testable in isolation.
+has not been initialised in the session. Observed 6 Sep 2026: waking the panel
+did not fix it, and the activeDocument fallback is what worked.
 """
 
 from typing import List, Optional, Tuple
@@ -14,7 +10,7 @@ import time
 
 
 def wake_data_panel(app, log: Optional[List[str]] = None) -> None:
-    """Force the lazy data model to initialise before touching it."""
+    """Force the lazy data model to initialise."""
     try:
         app.data.isDataPanelVisible = True
         for _ in range(16):
@@ -34,7 +30,7 @@ def _do_events():
 
 
 def list_projects(app) -> List[Tuple[str, str, object]]:
-    """[(hub name, project name, project)] across every hub."""
+    """[(hub, project name, project)] across every hub."""
     out = []
     try:
         hubs = app.data.dataHubs
@@ -54,12 +50,8 @@ def list_projects(app) -> List[Tuple[str, str, object]]:
 
 def resolve_project(app, project_id: Optional[str] = None,
                     log: Optional[List[str]] = None):
-    """Find a usable project, trying every route before giving up.
-
-    Order matters: the stored id is authoritative, activeProject is the
-    documented route, and activeDocument is the one that actually worked when
-    activeProject raised.
-    """
+    """Try every route before giving up. activeProject is the documented one;
+    activeDocument is the one that worked when it raised."""
     if log is None:
         log = []
     wake_data_panel(app, log)

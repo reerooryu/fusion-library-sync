@@ -1,11 +1,7 @@
-"""Manifest - the entire state of the system.
+"""Manifest: have I placed this path, and which cloud file is it?
 
-Answers one question per repo path: have I already placed this, and which
-cloud file is it?
-
-Keyed on the repo path. Identity is the Fusion lineage URN, never the display
-name: Fusion will hold three files called SyncProbe in one folder, each on its
-own lineage, with no warning and no rename.
+Identity is the lineage URN, never the display name - Fusion will hold three
+files with one name in a folder, each on its own lineage, without complaint.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -37,10 +33,6 @@ class Entry:
     at: str = field(default_factory=_now)
     placed_name: Optional[str] = None  # set only when it differs from the map
 
-    @property
-    def verified(self) -> bool:
-        return self.blob is not None and self.state in (PLACED, ADOPTED)
-
 
 @dataclass
 class Manifest:
@@ -67,7 +59,7 @@ class Manifest:
 
     # ---- mutation ------------------------------------------------------
     def mark_inflight(self, repo_path: str, placed_name: Optional[str] = None) -> None:
-        """Written BEFORE the upload starts, so a crash mid-upload is visible."""
+        """Written BEFORE the upload, so a crash mid-upload is visible."""
         self.files[repo_path] = Entry(
             state=INFLIGHT, at=_now(), placed_name=placed_name
         )
@@ -109,12 +101,8 @@ class Manifest:
         return m
 
     def save(self, path: str) -> None:
-        """Atomic: write a sibling temp file, fsync, then rename.
-
-        Called after every single file, not at the end of a run. A crash must
-        leave a manifest that accurately describes the cloud, or the next run
-        re-uploads and violates the invariant.
-        """
+        """Atomic, and called after every file - a crash must leave a manifest
+        that matches the cloud, or the next run re-uploads."""
         directory = os.path.dirname(os.path.abspath(path)) or "."
         os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
@@ -143,16 +131,9 @@ def adopt(source_id: str, repo: str, ref: str,
           release_known: bool = True) -> "Manifest":
     """Claim an existing library without uploading anything.
 
-    tree_at_release: {repo_path: blob} for the release the user says they have
-    local:           {repo_path: lineage} discovered by scanning the folder
-
-    Adopting against the *named release* rather than HEAD is the point: a user
-    on v2.0.3 whose files were recorded with today's SHAs would look current
-    and never update again. Recording the release they actually have makes the
-    next sync compute a correct delta.
-
-    release_known=False records lineage with blob=None, so nothing is claimed
-    about content and the files defer to Phase 2 rather than being guessed at.
+    Adopting against the named release rather than HEAD is the point: a user on
+    v2.0.3 recorded with today's hashes would look current and never update.
+    release_known=False records blob=None rather than guessing.
     """
     m = Manifest(source_id=source_id, repo=repo, ref=ref)
     for repo_path, lineage in local.items():

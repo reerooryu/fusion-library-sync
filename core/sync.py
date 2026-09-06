@@ -1,15 +1,12 @@
 """Orchestration: plan -> confirm -> apply.
 
-Phase 1 writes exactly one kind of thing: files new to the target. Changed,
-orphaned and unverified paths are reported and left alone.
+Phase 1 writes one kind of thing: files new to the target. Everything else is
+reported.
 
-The invariant, restated because everything here serves it:
+    INVARIANT: never upload a path already recorded in the manifest.
 
-    Never upload a path already recorded in the manifest.
-
-Fusion will not stop us. The manifest is the only guard, so it is written
-before an upload starts (inflight) and again once the upload is confirmed
-(placed), and it is flushed to disk after every file.
+Fusion will not stop us, so the manifest is the only guard: written before an
+upload (inflight), again once confirmed (placed), flushed after every file.
 """
 
 from dataclasses import dataclass, field
@@ -44,35 +41,25 @@ class Report:
         return not self.failures and not self.collisions and not self.unmappable
 
     def lines(self) -> List[str]:
-        out = [f"added            {len(self.added)}"]
-        if self.skipped_changed:
-            out.append(f"changed upstream {len(self.skipped_changed)}  (Phase 2)")
-        if self.skipped_orphan:
-            out.append(f"gone upstream    {len(self.skipped_orphan)}  (cannot delete)")
-        if self.unverified:
-            out.append(f"unverified       {len(self.unverified)}")
-        if self.reconciled:
-            out.append(f"reconciled       {len(self.reconciled)}")
-        if self.renamed:
-            out.append(f"renamed          {len(self.renamed)}  (see detail)")
-        if self.failures:
-            out.append(f"failed           {len(self.failures)}")
-        if self.collisions:
-            out.append(f"COLLISIONS       {len(self.collisions)}  (sync blocked)")
-        if self.unmappable:
-            out.append(f"UNMAPPABLE       {len(self.unmappable)}  (sync blocked)")
-        return out
+        rows = [
+            ("added", self.added, ""),
+            ("changed upstream", self.skipped_changed, "(Phase 2)"),
+            ("gone upstream", self.skipped_orphan, "(cannot delete)"),
+            ("unverified", self.unverified, ""),
+            ("reconciled", self.reconciled, ""),
+            ("renamed", self.renamed, "(see detail)"),
+            ("failed", self.failures, ""),
+            ("COLLISIONS", self.collisions, "(blocked)"),
+            ("UNMAPPABLE", self.unmappable, "(blocked)"),
+        ]
+        return [f"{label:17}{len(items):5d}  {note}".rstrip()
+                for label, items, note in rows if items or label == "added"]
 
 
 def reconcile_inflight(manifest: Manifest, panel: DataPanel,
                        report: Report) -> None:
-    """Resolve uploads interrupted by a crash.
-
-    The manifest cannot be trusted for these - the truth is in the cloud, so
-    go and look. Exactly one match means it landed; none means it is safe to
-    retry; more than one means a duplicate already exists and a human must
-    decide.
-    """
+    """Resolve uploads interrupted by a crash by looking in the cloud, not the
+    manifest. One match landed; none is safe to retry; more needs a human."""
     for repo_path, entry in list(manifest.in_state(INFLIGHT).items()):
         try:
             pp = P.map_path(repo_path)
@@ -96,19 +83,13 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel,
                             "resolve by hand before syncing"))
 
 
-def make_plan(tree: Dict[str, str], manifest: Optional[Manifest],
-              include: Sequence[str], exclude: Sequence[str] = ()) -> Tuple[PL.Plan, Dict[str, str]]:
-    selected = PL.select(tree, include, exclude)
-    return PL.diff(selected, manifest), selected
-
-
 def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                manifest: Manifest, panel: DataPanel, manifest_path: str,
                transport: gh.Transport, commit: Optional[str] = None,
                workdir: Optional[str] = None,
                on_progress: Optional[Progress] = None,
                dry_run: bool = False) -> Report:
-    """Execute the additive half of a plan. Writes nothing when dry_run."""
+    """Additive half of a plan. Writes nothing when dry_run."""
     report = Report(
         skipped_changed=list(plan.change),
         skipped_orphan=list(plan.orphan),
@@ -186,11 +167,11 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          exclude: Sequence[str] = (),
          dry_run: bool = True,
          on_progress: Optional[Progress] = None) -> Tuple[PL.Plan, Report]:
-    """One full cycle. Defaults to dry_run - callers opt in to writing."""
+    """One full cycle. Defaults to dry_run."""
     transport = transport or gh.UrllibTransport()
 
     commit = gh.resolve_commit(src, transport)
-    tree, _rate = gh.fetch_tree(src, transport, commit)
+    tree = gh.fetch_tree(src, transport, commit)
 
     manifest = Manifest.load(manifest_path) or Manifest(
         source_id=src.repo.replace("/", "_"), repo=src.repo, ref=src.ref)
@@ -200,7 +181,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
         reconcile_inflight(manifest, panel, pre)
         manifest.save(manifest_path)
 
-    plan, selected = make_plan(tree, manifest, include, exclude)
+    selected = PL.select(tree, include, exclude)
+    plan = PL.diff(selected, manifest)
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
                         transport, commit, on_progress=on_progress, dry_run=dry_run)
     report.reconciled = pre.reconciled + report.reconciled
@@ -213,17 +195,13 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
                    include: Sequence[str] = ("**/*.f3d",),
                    dry_run: bool = True) -> Tuple[Manifest, Dict[str, int]]:
     """Claim a library the user already imported. Uploads nothing.
-
-    at_ref=None means "I don't know which release" - lineages are recorded
-    with no blob, so nothing is claimed about content and the files defer to
-    Phase 2 rather than being guessed at.
-    """
+    at_ref=None records lineages with no blob rather than guessing."""
     release_known = at_ref is not None
     # Paths to match on always come from a tree - at the named release when we
     # have one, otherwise at the current ref. Without this an unknown-release
     # adopt has nothing to match and silently records an empty manifest.
     match_ref = at_ref or src.ref
-    tree, _ = gh.fetch_tree(gh.Source(src.repo, match_ref, src.subpath), transport)
+    tree = gh.fetch_tree(gh.Source(src.repo, match_ref, src.subpath), transport)
     tree = PL.select(tree, include)
 
     # One walk of the Data Panel - it is expensive against the real API.
