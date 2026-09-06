@@ -562,3 +562,58 @@ class TestSettleResilience:
         assert "poll_upload" in body
         assert "list_folder" not in body
         assert "find_by_name" not in body
+
+
+class TestFusionPollLogic:
+    """FusionDataPanel.poll_upload touches no adsk API, so its state machine
+    IS testable — with a fake future. Previously it was not covered at all,
+    and a mutation flipping the Processing check passed every test."""
+
+    def _panel(self):
+        from core.datapanel import FusionDataPanel
+        return object.__new__(FusionDataPanel)      # skip the adsk import
+
+    class Future:
+        def __init__(self, state, data_file=None, raises=False):
+            self._state, self._df, self._raises = state, data_file, raises
+
+        @property
+        def uploadState(self):
+            if self._raises:
+                raise RuntimeError("InternalValidationError")
+            return self._state
+
+        @property
+        def dataFile(self):
+            return self._df
+
+    class DF:
+        name, id, versionNumber = "Part", "urn:adsk:lineage:1", 1
+
+    def test_processing_returns_none(self):
+        h = {"future": self.Future(0), "name": "Part"}
+        assert self._panel().poll_upload(h) is None
+
+    def test_finished_returns_the_placed_file(self):
+        h = {"future": self.Future(1, self.DF()), "name": "Part"}
+        placed = self._panel().poll_upload(h)
+        assert placed.lineage == "urn:adsk:lineage:1"
+        assert placed.name == "Part"
+
+    def test_failed_state_raises(self):
+        from core.datapanel import UploadFailed
+        h = {"future": self.Future(2), "name": "Part"}
+        with pytest.raises(UploadFailed):
+            self._panel().poll_upload(h)
+
+    def test_finished_without_a_datafile_raises(self):
+        from core.datapanel import UploadFailed
+        h = {"future": self.Future(1, None), "name": "Part"}
+        with pytest.raises(UploadFailed):
+            self._panel().poll_upload(h)
+
+    def test_a_raising_future_becomes_UploadFailed_not_a_crash(self):
+        from core.datapanel import UploadFailed
+        h = {"future": self.Future(0, raises=True), "name": "Part"}
+        with pytest.raises(UploadFailed):
+            self._panel().poll_upload(h)
