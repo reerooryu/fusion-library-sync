@@ -5,7 +5,7 @@ Incremental sync of a Git-hosted CAD library into Autodesk Fusion's Data Panel.
 Downloads only what changed. Never touches a file it has already placed.
 Refuses to guess.
 
-**Status:** Phase 1 core logic, tested. No Fusion integration yet.
+**Status:** Phase 1 core complete and tested (38 tests). Add-in UI not built.
 
 ## Why
 
@@ -32,6 +32,9 @@ preventing that.
 core/paths.py      repo path -> Data Panel location
 core/manifest.py   state: have I placed this, and which cloud file is it
 core/plan.py       tree vs manifest -> add / change / orphan / unverified
+core/github.py     resolve ref, read tree, fetch blobs (transport injected)
+core/datapanel.py  Data Panel interface + Fusion impl + a fake that duplicates
+core/sync.py       plan -> confirm -> apply, with crash recovery
 tests/             acceptance tests against the real corpus
 ```
 
@@ -63,7 +66,22 @@ The Data Panel import approach follows
 which proved bulk import with folder structure preserved. This project adds a
 Git source, change detection, and incremental sync.
 
+## Testing
+
+The fake Data Panel in `core/datapanel.py` reproduces Fusion's dangerous
+behaviour on purpose: uploading a same-named file into a folder creates a
+second file on a new lineage, silently. A suite that passed against a
+well-behaved fake would prove nothing about the invariant.
+
+The suite is mutation-checked. Breaking the manifest lookup, removing the
+per-file flush, making inflight recovery trust the manifest instead of the
+cloud, or ignoring name collisions each fail the test written to catch it.
+
 ## Not yet done
 
-Phase 1: Fusion add-in shell, folder creation, upload loop, dry-run UI.
-Phase 2: in-place updates for changed files — proven possible, not built.
+Phase 1: the add-in shell — toolbar command, dry-run preview, progress UI.
+`core/` is complete and Fusion-free; only the presentation layer is missing.
+
+Phase 2: in-place updates for changed files. Proven possible against a live
+project (open the file, `BaseFeature.startEdit`, `updateBody`, `finishEdit`,
+`save` — same lineage, version increments). Not built.
