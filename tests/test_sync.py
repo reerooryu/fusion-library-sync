@@ -139,8 +139,12 @@ class TestCrashRecovery:
 
         m = Manifest.load(mpath)
         assert m is not None, "manifest must survive a crash"
-        assert len(m.in_state(PLACED)) == 3
-        assert len(m.in_state(INFLIGHT)) == 1, "the file being uploaded when we died"
+        # Uploads are fired as a batch and resolved afterwards, so a crash
+        # during the fire phase leaves everything inflight, nothing placed.
+        # Those files may still have landed; reconcile_inflight settles that
+        # on the next run by looking at the folder.
+        assert len(m.in_state(PLACED)) == 0
+        assert len(m.in_state(INFLIGHT)) == 4, "3 fired plus the one that died"
 
     def test_resume_after_crash_produces_no_duplicates(self, small_tree, src, tmp_path):
         panel = FakeDataPanel(crash_after=3)
@@ -446,37 +450,53 @@ class TestAsyncUpload:
         assert panel.total_files == n
         assert panel.duplicates() == {}
 
-    def test_upload_that_never_appears_is_reported_not_silently_lost(
+    def test_upload_that_never_resolves_is_reported_not_silently_lost(
             self, src, tmp_path):
-        class Vanishing(FakeDataPanel):
-            def begin_upload(self, folder_id, local_path, name):
-                return None                        # fired, never lands
+        class Stuck(FakeDataPanel):
+            def poll_upload(self, handle):
+                return None                        # forever processing
 
-        panel, tr = Vanishing(), FakeTransport({"A/Part.f3d": "sha"})
+        panel, tr = Stuck(), FakeTransport({"A/Part.f3d": "sha"})
         mpath = str(tmp_path / "m.json")
 
         plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False,
                            settle_wait=2.0)
 
         assert rep.added == []
-        assert any("did not appear" in msg for _, msg in rep.failures)
-        assert panel.total_files == 0
+        assert any("still processing" in msg for _, msg in rep.failures)
 
-    def test_settle_flags_a_duplicate_rather_than_recording_one(self, src, tmp_path):
-        class Doubling(FakeDataPanel):
-            def begin_upload(self, folder_id, local_path, name):
-                self.upload(folder_id, local_path, name)
-                self.upload(folder_id, local_path, name)   # lands twice
-                return None
+    def test_lineage_comes_from_our_own_upload_not_a_name_match(
+            self, src, tmp_path):
+        """Polling the future gives the identity of the file WE created, so a
+        same-named neighbour cannot be mistaken for ours."""
+        tree = {"A/Part.f3d": "sha"}
+        panel, tr = FakeDataPanel(), FakeTransport(tree)
+        mpath = str(tmp_path / "m.json")
 
-        panel, tr = Doubling(), FakeTransport({"A/Part.f3d": "sha"})
+        folder = panel.ensure_folder(("A",))
+        decoy = panel.upload(folder, "/tmp/x", "Part")   # someone else's file
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+
+        entry = Manifest.load(mpath).get("A/Part.f3d")
+        assert entry.lineage != decoy.lineage, "recorded the decoy"
+        assert entry.state == PLACED
+
+    def test_upload_failure_during_settle_is_reported(self, src, tmp_path):
+        from core.datapanel import UploadFailed as UF
+
+        class Failing(FakeDataPanel):
+            def poll_upload(self, handle):
+                raise UF("upload state 2")
+
+        panel, tr = Failing(), FakeTransport({"A/Part.f3d": "sha"})
         mpath = str(tmp_path / "m.json")
 
         plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False,
-                           settle_wait=2.0)
+                           settle_wait=5.0)
 
-        assert any("2 files named" in msg for _, msg in rep.failures)
-        assert "A/Part.f3d" not in Manifest.load(mpath)
+        assert any("state 2" in msg for _, msg in rep.failures)
+        assert "A/Part.f3d" not in Manifest.load(mpath), "must stay retryable"
 
     def test_no_blocking_wait_on_the_future(self):
         """Regression guard for the actual bug: sync must not call the
@@ -533,17 +553,12 @@ class TestSettleResilience:
         assert rep.added == ["A/Part.f3d"], "should recover and record"
         assert Manifest.load(mpath).get("A/Part.f3d").state == PLACED
 
-    def test_persistent_panel_error_gives_up_and_reports(self, src, tmp_path):
-        tree = {"A/Part.f3d": "sha"}
-
-        class Broken(FakeDataPanel):
-            def list_folder(self, folder_id):
-                raise RuntimeError("Data Panel is unavailable")
-
-        panel, tr = Broken(deferred=True), FakeTransport(tree)
-        plan, rep = S.sync(src, str(tmp_path / "m.json"), panel, tr, F3D,
-                           dry_run=False, settle_wait=30.0)
-
-        assert rep.failures, "must report, not hang or crash"
-        assert any("unreadable" in m or "did not appear" in m
-                   for _, m in rep.failures)
+    def test_no_folder_enumeration_during_settle(self):
+        """Regression: settle used to list the folder once per pending file
+        per pass, and DataFolder has no refresh() to make that cheap or even
+        valid. It now polls futures instead."""
+        import inspect
+        body = inspect.getsource(S.settle)
+        assert "poll_upload" in body
+        assert "list_folder" not in body
+        assert "find_by_name" not in body

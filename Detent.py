@@ -29,8 +29,28 @@ PANEL_ID = "SolidScriptsAddinsPanel"    # Utilities tab > ADD-INS
 
 CONFIG_PATH = os.path.join(_HERE, "config.json")
 STATE_DIR = os.path.join(_HERE, "state")
+LOG_PATH = os.path.join(STATE_DIR, "detent.log")
 
 _handlers = []      # Fusion garbage-collects handlers that aren't referenced
+
+
+def _log(text):
+    """Fusion message boxes truncate, and they ate the one line that mattered:
+    the exception type. Always write the full text somewhere readable."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(f"\n===== {__import__('datetime').datetime.now()} =====\n")
+            fh.write(text)
+    except Exception:
+        pass
+    return LOG_PATH
+
+
+def _fail(ui, what):
+    detail = traceback.format_exc()
+    path = _log(f"{what}\n{detail}")
+    ui.messageBox(f"{what}\n\n{detail[-700:]}\n\nFull log:\n{path}")
 
 
 def _app():
@@ -105,7 +125,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             cmd.execute.add(on_exec)
             _handlers.append(on_exec)
         except Exception:
-            _ui().messageBox(f"Detent failed to open:\n{traceback.format_exc()}")
+            _fail(_ui(), "Detent failed to open")
 
 
 def _config_note(cfg) -> str:
@@ -160,7 +180,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 _do_sync(ui, src, manifest_path, panel, transport, source,
                          write=action.startswith("Sync"))
         except Exception:
-            ui.messageBox(f"Detent failed:\n{traceback.format_exc()}")
+            _fail(ui, "Detent failed")
 
 
 def _pick_project(name, log):
@@ -350,7 +370,7 @@ def run(context):
             panel.controls.addCommand(cmd_def)
     except Exception:
         try:
-            _ui().messageBox(f"Detent failed to load:\n{traceback.format_exc()}")
+            _fail(_ui(), "Detent failed to load")
         except Exception:
             pass
 
@@ -369,6 +389,6 @@ def stop(context):
         _handlers.clear()
     except Exception:
         try:
-            _ui().messageBox(f"Detent failed to unload:\n{traceback.format_exc()}")
+            _fail(_ui(), "Detent failed to unload")
         except Exception:
             pass

@@ -30,8 +30,8 @@ class UploadFailed(RuntimeError):
 
 class DataPanel(Protocol):
     def ensure_folder(self, folders: Sequence[str]) -> str: ...
-    def begin_upload(self, folder_id: str, local_path: str,
-                     name: str) -> Optional[PlacedFile]: ...
+    def begin_upload(self, folder_id: str, local_path: str, name: str): ...
+    def poll_upload(self, handle) -> Optional[PlacedFile]: ...
     def upload(self, folder_id: str, local_path: str, name: str,
                on_wait=None) -> PlacedFile: ...
     def list_folder(self, folder_id: str) -> List[PlacedFile]: ...
@@ -77,12 +77,18 @@ class FakeDataPanel:
         self.contents[folder_id].append(pf)
         return pf
 
-    def begin_upload(self, folder_id: str, local_path: str,
-                     name: str) -> Optional[PlacedFile]:
-        """Start an upload. Returns None when completion is asynchronous -
-        the caller must reconcile against the folder afterwards."""
+    def begin_upload(self, folder_id: str, local_path: str, name: str):
+        """Fire, return a handle. Never blocks."""
         placed = self.upload(folder_id, local_path, name)
-        return None if self.deferred else placed
+        return {"placed": placed, "polls": 0}
+
+    def poll_upload(self, handle) -> Optional[PlacedFile]:
+        """None means still in flight. Deferred fakes take a few polls, as
+        Fusion does."""
+        handle["polls"] += 1
+        if self.deferred and handle["polls"] < 3:
+            return None
+        return handle["placed"]
 
     def list_folder(self, folder_id: str) -> List[PlacedFile]:
         return list(self.contents.get(folder_id, []))
@@ -142,48 +148,38 @@ class FusionDataPanel:
         return folder
 
     def begin_upload(self, folder, local_path: str, name: str):
-        """Fire and return. Do NOT block on uploadState: Fusion completes the
-        upload on the same event loop we would be blocking, so waiting makes
-        a 10-second upload take minutes and eventually time out, while the
-        file has in fact already landed. Resolution happens later, by looking
-        at the folder."""
-        folder.uploadFile(local_path)
-        return None
+        """Fire and return the future. Never wait here.
 
-    def upload(self, folder, local_path: str, name: str,
-               on_wait=None) -> PlacedFile:
-        """Blocking variant. Kept for single uploads; not used by sync."""
-        import adsk.core
-        future = folder.uploadFile(local_path)
-        # Asynchronous: 0 = Processing, 1 = Finished, 2 = Failed.
-        import time
-        started = time.time()
-        deadline = started + 300
-        while time.time() < deadline:
+        Uploads run concurrently: five fired in 0.17s all completed within
+        50s. Waiting on each in turn would have cost five times that.
+        """
+        return {"future": folder.uploadFile(local_path), "name": name}
+
+    def poll_upload(self, handle) -> Optional[PlacedFile]:
+        """None while still processing. Raises UploadFailed on a hard failure.
+
+        uploadState: 0 Processing, 1 Finished, 2 Failed.
+        """
+        future = handle["future"]
+        try:
             state = future.uploadState
-            if state != 0:
-                break
-            if on_wait:
-                on_wait(time.time() - started)
-            adsk.doEvents()
-            time.sleep(0.4)
-        else:
-            raise UploadFailed(f"timed out uploading {name!r}")
+        except Exception as exc:                      # noqa: BLE001
+            raise UploadFailed(f"{handle['name']}: uploadState raised: {exc}")
 
-        if future.uploadState != 1:
-            raise UploadFailed(f"upload failed for {name!r} (state {future.uploadState})")
+        if state == 0:
+            return None
+        if state != 1:
+            raise UploadFailed(f"{handle['name']}: upload state {state}")
 
         df = future.dataFile
         if df is None:
-            raise UploadFailed(f"no DataFile returned for {name!r}")
+            raise UploadFailed(f"{handle['name']}: finished with no DataFile")
         return PlacedFile(name=df.name, lineage=df.id,
                           version=getattr(df, "versionNumber", 1) or 1)
 
     def list_folder(self, folder) -> List[PlacedFile]:
-        try:
-            folder.refresh()
-        except Exception:
-            pass
+        # NOTE: DataFolder has no refresh() - measured, not assumed. Calling
+        # it raises AttributeError, which a bare except used to swallow.
         out = []
         for i in range(folder.dataFiles.count):
             f = folder.dataFiles.item(i)

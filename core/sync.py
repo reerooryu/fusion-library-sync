@@ -85,84 +85,54 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel,
 
 
 def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
-           report: Report, manifest_path: str, fired: Sequence[str],
+           report: Report, manifest_path: str, handles: Dict[str, object],
            on_progress: Optional[Progress], max_wait: float) -> None:
-    """Wait for fired uploads to appear in the Data Panel, then record them.
+    """Poll the upload futures until each resolves.
 
-    Fusion finishes an upload on the event loop, so the only reliable signal
-    that a file arrived is the folder itself. Poll it, do not poll the future.
+    Measured 6 Sep 2026: five files fired in 0.17s reached Finished at 18.8s
+    and 50.2s. They upload concurrently, so poll them all rather than waiting
+    on each in turn - and poll gently, because hammering the event loop is
+    what starves the very work being waited on.
     """
     deadline = time.time() + max_wait
-    pending = list(fired)
+    pending = dict(handles)
     total = len(pending)
-    consecutive_errors = 0
 
     while pending and time.time() < deadline:
-        # One listing per folder per pass. Asking per file meant a refresh()
-        # round trip for every pending path, every second - enough to make the
-        # Data Panel API throw.
-        by_folder: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
-        for repo_path in pending:
+        done_now = []
+        for repo_path, handle in list(pending.items()):
             try:
-                pp = P.map_path(repo_path)
-            except P.PathError:
+                placed = panel.poll_upload(handle)
+            except UploadFailed as exc:
+                report.failures.append((repo_path, str(exc)))
                 manifest.drop(repo_path)
+                done_now.append(repo_path)
                 continue
-            by_folder.setdefault(pp.folders, []).append((repo_path, pp.name))
+            if placed is None:
+                continue                      # still in flight
+            manifest.record(repo_path, selected.get(repo_path, ""),
+                            placed.lineage, placed.version, state=PLACED,
+                            placed_name=placed.name if placed.name else None)
+            report.added.append(repo_path)
+            done_now.append(repo_path)
 
-        still: List[str] = []
-        pass_failed = False
-        for folders, wanted in by_folder.items():
-            try:
-                folder = panel.ensure_folder(folders)
-                present: Dict[str, List] = {}
-                for f in panel.list_folder(folder):
-                    present.setdefault(f.name, []).append(f)
-            except Exception as exc:            # noqa: BLE001
-                # A transient Data Panel error must not end the run; the files
-                # are already uploading. Retry on the next pass.
-                consecutive_errors += 1
-                pass_failed = True
-                if consecutive_errors >= 5:
-                    for repo_path, _n in wanted:
-                        report.failures.append(
-                            (repo_path, f"Data Panel unreadable: {exc}"))
-                    still.extend(p for p, _n in wanted)
-                    continue
-                still.extend(p for p, _n in wanted)
-                continue
+        for repo_path in done_now:
+            pending.pop(repo_path, None)
 
-            for repo_path, name in wanted:
-                hits = present.get(name, [])
-                if len(hits) == 1:
-                    manifest.record(repo_path, selected.get(repo_path, ""),
-                                    hits[0].lineage, hits[0].version, state=PLACED)
-                elif len(hits) > 1:
-                    report.failures.append(
-                        (repo_path, f"{len(hits)} files named {name!r} after upload"))
-                    manifest.drop(repo_path)
-                else:
-                    still.append(repo_path)
+        if done_now:
+            manifest.save(manifest_path)
 
-        if not pass_failed:
-            consecutive_errors = 0
-        if consecutive_errors >= 5:
-            break
-
-        manifest.save(manifest_path)
-        done = total - len(still)
+        done = total - len(pending)
         if on_progress:
             if on_progress(done, total, f"Finishing {done}/{total}") is False:
                 raise gh.Cancelled("cancelled while finishing")
-        if not still:
+        if not pending:
             break
-        pending = still
-        time.sleep(2.0)
+        time.sleep(1.0)
 
     for repo_path in pending:
-        if manifest.get(repo_path) and manifest.get(repo_path).state == PLACED:
-            continue
-        report.failures.append((repo_path, "upload did not appear in time"))
+        report.failures.append(
+            (repo_path, f"upload still processing after {max_wait:.0f}s"))
 
 
 def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
@@ -209,7 +179,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         report.failures.extend(fetch_failures)
 
         total = len(mapped)
-        fired: List[str] = []
+        handles: Dict[str, object] = {}
         for i, pp in enumerate(mapped, 1):
             local = fetched.get(pp.repo_path)
             if not local:
@@ -225,36 +195,20 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
 
             if on_progress:
                 if on_progress(i - 1, total,
-                               f"Uploading {i}/{total}  {pp.name}") is False:
+                               f"Sending {i}/{total}  {pp.name}") is False:
                     raise gh.Cancelled("cancelled during upload")
 
             try:
-                placed = panel.begin_upload(folder, local, pp.name)
+                handles[pp.repo_path] = panel.begin_upload(folder, local, pp.name)
             except UploadFailed as exc:
                 manifest.drop(pp.repo_path)
                 manifest.save(manifest_path)
                 report.failures.append((pp.repo_path, str(exc)))
                 continue
 
-            if placed is None:
-                # Asynchronous: the entry stays inflight and is resolved by
-                # settle() below, which looks at the folder rather than at a
-                # future that will not report Finished while we block.
-                fired.append(pp.repo_path)
-            else:
-                if placed.name != pp.name:
-                    report.renamed.append((pp.repo_path, placed.name))
-                manifest.record(pp.repo_path, selected[pp.repo_path],
-                                placed.lineage, placed.version, state=PLACED,
-                                placed_name=placed.name if placed.name != pp.name else None)
-                manifest.save(manifest_path)
-                report.added.append(pp.repo_path)
-
-        if fired:
+        if handles:
             settle(manifest, panel, selected, report, manifest_path,
-                   fired, on_progress, settle_wait)
-            report.added.extend(p for p in fired
-                                if manifest.get(p) and manifest.get(p).state == PLACED)
+                   handles, on_progress, settle_wait)
 
         manifest.synced_commit = commit
         manifest.save(manifest_path)
