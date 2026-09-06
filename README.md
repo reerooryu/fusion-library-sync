@@ -9,7 +9,7 @@ Refuses to guess.
 
 ## Why
 
-The reference corpus — the VEX CAD Fusion 360 library — is 1,193 files and
+The reference corpus — the VEX CAD Fusion 360 library — is 1,198 files and
 2.2 GB, and it barely compresses. Today every user re-downloads all of it for
 every release. One release (v2.0.3) changed a single 3 KB README; everyone
 still pulled 2.2 GB to get it.

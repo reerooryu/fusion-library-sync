@@ -228,3 +228,28 @@ class TestManifestDurability:
         f.write_text(json.dumps({"schema": 99, "source_id": "x", "repo": "r"}))
         with pytest.raises(ValueError):
             Manifest.load(str(f))
+
+
+class TestGlobs:
+    """Git-style semantics: '**/' matches zero or more directories."""
+
+    def test_double_star_matches_files_at_the_root_of_the_prefix(self, t205):
+        sel = PL.select(t205, ("Hardware/Screws/**/*.f3d",))
+        direct = [p for p in sel if p.count("/") == 2]
+        assert direct, "files directly in Hardware/Screws must be included"
+        assert len(sel) == 45
+
+    def test_single_star_does_not_cross_a_slash(self, t205):
+        sel = PL.select(t205, ("Hardware/Screws/*.f3d",))
+        assert all(p.count("/") == 2 for p in sel)
+        assert len(sel) == 2
+
+    def test_leading_double_star_matches_any_depth(self, t205):
+        assert len(PL.select(t205, ("**/*.f3d",))) == 1198
+
+    def test_exclude_wins(self, t205):
+        sel = PL.select(t205, ("**/*.f3d",), ("Field Elements/**",))
+        assert not any(p.startswith("Field Elements/") for p in sel)
+
+    def test_extension_anchored_at_the_end(self, t205):
+        assert PL.select({"a/b.f3d.bak": "s"}, ("**/*.f3d",)) == {}

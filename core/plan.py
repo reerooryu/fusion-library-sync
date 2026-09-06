@@ -1,20 +1,40 @@
 """Diff a remote tree against the manifest. Only `add` is ever written."""
 
 from dataclasses import dataclass, field
-from fnmatch import fnmatch
+from functools import lru_cache
+import re
 from typing import Dict, List, Mapping, Optional, Sequence
 
 from .manifest import Manifest, INFLIGHT
 
 
+@lru_cache(maxsize=256)
+def _compile(pattern: str):
+    """Git-style globs: '*' stops at '/', '**' crosses it, '**/' matches zero
+    or more directories. fnmatch gets all three wrong for our purposes."""
+    out, i, n = [], 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if pattern[i:i + 3] == "**/":
+                out.append("(?:.*/)?")
+                i += 3
+                continue
+            if pattern[i:i + 2] == "**":
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
 def _matches(path: str, patterns: Sequence[str]) -> bool:
-    for pat in patterns:
-        # '**/*.f3d' should match a file at the root too.
-        if fnmatch(path, pat):
-            return True
-        if pat.startswith("**/") and fnmatch(path, pat[3:]):
-            return True
-    return False
+    return any(_compile(pat).match(path) for pat in patterns)
 
 
 def select(tree: Mapping[str, str],

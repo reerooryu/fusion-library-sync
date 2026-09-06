@@ -297,10 +297,18 @@ def _plan_text(plan, source) -> str:
         if len(plan.add) >= gh.TARBALL_THRESHOLD:
             lines.append("Full first sync - downloads the entire repository.")
         lines += ["", "First few:"]
-        lines += [f"    {p}" for p in plan.add[:8]]
+        lines += [f"    {_short(p)}" for p in plan.add[:8]]
         if len(plan.add) > 8:
             lines.append(f"    ... and {len(plan.add) - 8} more")
     return "\n".join(lines)
+
+
+def _short(path: str, width: int = 58) -> str:
+    """Fusion message boxes wrap long paths into soup. Keep the end, which is
+    the part that identifies the file."""
+    if len(path) <= width:
+        return path
+    return "..." + path[-(width - 3):]
 
 
 def _report_text(report, manifest_path) -> str:
