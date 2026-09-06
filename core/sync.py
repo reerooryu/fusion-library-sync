@@ -95,26 +95,59 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
     deadline = time.time() + max_wait
     pending = list(fired)
     total = len(pending)
+    consecutive_errors = 0
 
     while pending and time.time() < deadline:
-        still: List[str] = []
+        # One listing per folder per pass. Asking per file meant a refresh()
+        # round trip for every pending path, every second - enough to make the
+        # Data Panel API throw.
+        by_folder: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
         for repo_path in pending:
             try:
                 pp = P.map_path(repo_path)
             except P.PathError:
                 manifest.drop(repo_path)
                 continue
-            folder = panel.ensure_folder(pp.folders)
-            hits = panel.find_by_name(folder, pp.name)
-            if len(hits) == 1:
-                manifest.record(repo_path, selected.get(repo_path, ""),
-                                hits[0].lineage, hits[0].version, state=PLACED)
-            elif len(hits) > 1:
-                report.failures.append(
-                    (repo_path, f"{len(hits)} files named {pp.name!r} after upload"))
-                manifest.drop(repo_path)
-            else:
-                still.append(repo_path)
+            by_folder.setdefault(pp.folders, []).append((repo_path, pp.name))
+
+        still: List[str] = []
+        pass_failed = False
+        for folders, wanted in by_folder.items():
+            try:
+                folder = panel.ensure_folder(folders)
+                present: Dict[str, List] = {}
+                for f in panel.list_folder(folder):
+                    present.setdefault(f.name, []).append(f)
+            except Exception as exc:            # noqa: BLE001
+                # A transient Data Panel error must not end the run; the files
+                # are already uploading. Retry on the next pass.
+                consecutive_errors += 1
+                pass_failed = True
+                if consecutive_errors >= 5:
+                    for repo_path, _n in wanted:
+                        report.failures.append(
+                            (repo_path, f"Data Panel unreadable: {exc}"))
+                    still.extend(p for p, _n in wanted)
+                    continue
+                still.extend(p for p, _n in wanted)
+                continue
+
+            for repo_path, name in wanted:
+                hits = present.get(name, [])
+                if len(hits) == 1:
+                    manifest.record(repo_path, selected.get(repo_path, ""),
+                                    hits[0].lineage, hits[0].version, state=PLACED)
+                elif len(hits) > 1:
+                    report.failures.append(
+                        (repo_path, f"{len(hits)} files named {name!r} after upload"))
+                    manifest.drop(repo_path)
+                else:
+                    still.append(repo_path)
+
+        if not pass_failed:
+            consecutive_errors = 0
+        if consecutive_errors >= 5:
+            break
 
         manifest.save(manifest_path)
         done = total - len(still)
@@ -124,9 +157,11 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
         if not still:
             break
         pending = still
-        time.sleep(1.0)
+        time.sleep(2.0)
 
     for repo_path in pending:
+        if manifest.get(repo_path) and manifest.get(repo_path).state == PLACED:
+            continue
         report.failures.append((repo_path, "upload did not appear in time"))
 
 

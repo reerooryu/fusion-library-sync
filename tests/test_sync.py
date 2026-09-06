@@ -486,3 +486,64 @@ class TestAsyncUpload:
         assert "begin_upload" in src_text
         assert "on_wait" not in src_text
         assert ".upload(" not in src_text
+
+
+class TestSettleResilience:
+    """settle() polls a live API. It must be frugal and must not die on a
+    transient error."""
+
+    def test_one_listing_per_folder_per_pass(self, src, tmp_path):
+        """Regression: asking per file meant a refresh() round trip for every
+        pending path, every second."""
+        tree = {f"A/Part{i}.f3d": f"s{i}" for i in range(20)}
+
+        class Counting(FakeDataPanel):
+            listings = 0
+
+            def list_folder(self, folder_id):
+                Counting.listings += 1
+                return super().list_folder(folder_id)
+
+        Counting.listings = 0
+        panel, tr = Counting(deferred=True), FakeTransport(tree)
+        S.sync(src, str(tmp_path / "m.json"), panel, tr, F3D, dry_run=False)
+
+        assert Counting.listings <= 3, (
+            f"{Counting.listings} listings for 20 files in one folder")
+
+    def test_transient_panel_error_is_retried_not_fatal(self, src, tmp_path):
+        tree = {"A/Part.f3d": "sha"}
+
+        class Flaky(FakeDataPanel):
+            calls = 0
+
+            def list_folder(self, folder_id):
+                Flaky.calls += 1
+                if Flaky.calls <= 2:
+                    raise RuntimeError("RuntimeError: 3 : transient")
+                return super().list_folder(folder_id)
+
+        Flaky.calls = 0
+        panel, tr = Flaky(deferred=True), FakeTransport(tree)
+        mpath = str(tmp_path / "m.json")
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False,
+                           settle_wait=30.0)
+
+        assert rep.added == ["A/Part.f3d"], "should recover and record"
+        assert Manifest.load(mpath).get("A/Part.f3d").state == PLACED
+
+    def test_persistent_panel_error_gives_up_and_reports(self, src, tmp_path):
+        tree = {"A/Part.f3d": "sha"}
+
+        class Broken(FakeDataPanel):
+            def list_folder(self, folder_id):
+                raise RuntimeError("Data Panel is unavailable")
+
+        panel, tr = Broken(deferred=True), FakeTransport(tree)
+        plan, rep = S.sync(src, str(tmp_path / "m.json"), panel, tr, F3D,
+                           dry_run=False, settle_wait=30.0)
+
+        assert rep.failures, "must report, not hang or crash"
+        assert any("unreadable" in m or "did not appear" in m
+                   for _, m in rep.failures)
