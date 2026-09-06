@@ -11,8 +11,8 @@ Rules (spec section 06):
      future duplicate.
 """
 
-from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import List, Sequence, Tuple
 import posixpath
 import unicodedata
 

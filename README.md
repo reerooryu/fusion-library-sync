@@ -5,7 +5,7 @@ Incremental sync of a Git-hosted CAD library into Autodesk Fusion's Data Panel.
 Downloads only what changed. Never touches a file it has already placed.
 Refuses to guess.
 
-**Status:** Phase 1 core complete and tested (38 tests). Add-in UI not built.
+**Status:** v0.1 — Fusion add-in, additive sync only. 62 tests.
 
 ## Why
 
@@ -29,12 +29,16 @@ preventing that.
 ## Layout
 
 ```
+Lockstep.py        add-in entry: Utilities > ADD-INS > Sync Library
+config.json        which libraries to sync (created on first run)
+core/config.py     config schema, repo-URL normalisation
 core/paths.py      repo path -> Data Panel location
 core/manifest.py   state: have I placed this, and which cloud file is it
 core/plan.py       tree vs manifest -> add / change / orphan / unverified
 core/github.py     resolve ref, read tree, fetch blobs (transport injected)
 core/datapanel.py  Data Panel interface + Fusion impl + a fake that duplicates
 core/sync.py       plan -> confirm -> apply, with crash recovery
+core/fusion_project.py  resolving a project when activeProject throws
 tests/             acceptance tests against the real corpus
 ```
 
@@ -43,6 +47,26 @@ tests/             acceptance tests against the real corpus
 ```
 python3 -m pytest tests/ -q
 ```
+
+## Install
+
+1. Install **GitHubToFusion360** from the Autodesk App Store (once, ever)
+2. Run it, paste this repo's URL (once, ever)
+3. Fusion → **Utilities → ADD-INS → Sync Library**
+
+VEX-CAD is preconfigured, so there is no second URL to paste. Add your own
+libraries by editing `config.json` beside the add-in.
+
+## Use
+
+**Preview changes** — lists what would move. Writes nothing.
+
+**Sync now** — previews, asks, then uploads new files only.
+
+**Adopt existing library** — already imported the library by hand? Adopt claims
+it without uploading anything. Give the release tag you installed (`v2.0.3`)
+so the next sync moves only the difference; leave it blank and the files are
+recorded as unverified rather than assumed current.
 
 ## Design
 

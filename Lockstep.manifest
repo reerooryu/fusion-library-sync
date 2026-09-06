@@ -1,0 +1,11 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "lockstep-sync",
+    "author": "reerooryu",
+    "description": { "": "Incremental sync of a Git-hosted CAD library into Fusion's Data Panel." },
+    "version": "0.1.0",
+    "runOnStartup": true,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

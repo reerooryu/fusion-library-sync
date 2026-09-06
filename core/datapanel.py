@@ -12,10 +12,9 @@ The fake models the bug on purpose. A test suite against a well-behaved fake
 would prove nothing about the invariant we actually have to hold.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 import itertools
-import os
 
 
 @dataclass(frozen=True)
@@ -131,8 +130,6 @@ class FusionDataPanel:
 
     def upload(self, folder, local_path: str, name: str) -> PlacedFile:
         import adsk.core
-        app = adsk.core.Application.get()
-
         future = folder.uploadFile(local_path)
         # Asynchronous: 0 = Processing, 1 = Finished, 2 = Failed.
         import time

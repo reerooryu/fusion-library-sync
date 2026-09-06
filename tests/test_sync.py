@@ -286,3 +286,82 @@ class TestStrategy:
         url = gh.raw_url(src, "Motion/0.5” OD Spacer.f3d", "abc123")
         assert "”" not in url and "%E2%80%9D" in url
         assert url.startswith("https://raw.githubusercontent.com/")
+
+
+class TestAdopt:
+    """Claiming a library the user already imported. Uploads nothing."""
+
+    def _panel_with(self, tree, src):
+        from core import paths as P
+        panel = FakeDataPanel()
+        for repo_path in tree:
+            pp = P.map_path(repo_path)
+            folder = panel.ensure_folder(pp.folders)
+            panel.upload(folder, "/tmp/x", pp.name)
+        panel.uploads.clear()          # pretend these predate us
+        return panel
+
+    def test_adopt_matches_and_uploads_nothing(self, small_tree, src, tmp_path):
+        panel = self._panel_with(small_tree, src)
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+
+        m, stats = S.adopt_existing(src, mpath, panel, tr, "v2.0.5", F3D, dry_run=False)
+
+        assert stats["matched"] == len(small_tree)
+        assert stats["missing"] == 0
+        assert panel.uploads == [], "adopt must not upload"
+        assert all(e.blob is not None for e in m.files.values())
+
+    def test_adopt_then_sync_is_a_no_op(self, small_tree, src, tmp_path):
+        panel = self._panel_with(small_tree, src)
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+        S.adopt_existing(src, mpath, panel, tr, "v2.0.5", F3D, dry_run=False)
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+
+        assert plan.add == [], "adopted files must not be re-uploaded"
+        assert panel.uploads == []
+        assert panel.duplicates() == {}
+
+    def test_unknown_release_still_adopts_the_files(self, small_tree, src, tmp_path):
+        """Regression: passing at_ref=None used to match against an empty tree
+        and silently record an EMPTY manifest, so the next sync re-uploaded
+        the user's entire library."""
+        panel = self._panel_with(small_tree, src)
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+
+        m, stats = S.adopt_existing(src, mpath, panel, tr, None, F3D, dry_run=False)
+
+        assert stats["matched"] == len(small_tree), "adopted nothing"
+        assert len(m.files) == len(small_tree)
+        assert all(e.blob is None for e in m.files.values()), "must not claim content"
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+        assert plan.add == [], "re-uploaded an adopted library"
+        assert len(plan.unverified) == len(small_tree)
+        assert panel.duplicates() == {}
+
+    def test_partial_library_reports_the_gap(self, small_tree, src, tmp_path):
+        subset = dict(list(small_tree.items())[:5])
+        panel = self._panel_with(subset, src)
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+
+        m, stats = S.adopt_existing(src, mpath, panel, tr, "v2.0.5", F3D, dry_run=False)
+
+        assert stats["matched"] == 5
+        assert stats["missing"] == len(small_tree) - 5
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+        assert len(rep.added) == len(small_tree) - 5, "should add only the gap"
+        assert panel.duplicates() == {}
+
+    def test_dry_run_adopt_writes_no_manifest(self, small_tree, src, tmp_path):
+        panel = self._panel_with(small_tree, src)
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+        S.adopt_existing(src, mpath, panel, tr, "v2.0.5", F3D, dry_run=True)
+        assert not os.path.exists(mpath)

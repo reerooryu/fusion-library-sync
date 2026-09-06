@@ -12,7 +12,6 @@ from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
 import io
 import json
 import os
-import posixpath
 import tarfile
 import urllib.parse
 import urllib.request

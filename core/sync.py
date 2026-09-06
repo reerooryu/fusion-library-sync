@@ -14,15 +14,14 @@ before an upload starts (inflight) and again once the upload is confirmed
 
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
-import os
 import shutil
 import tempfile
 
 from . import github as gh
 from . import paths as P
 from . import plan as PL
-from .datapanel import DataPanel, PlacedFile, UploadFailed
-from .manifest import Manifest, INFLIGHT, PLACED, ADOPTED, adopt
+from .datapanel import DataPanel, UploadFailed
+from .manifest import Manifest, INFLIGHT, PLACED, adopt
 
 
 Progress = Callable[[int, int, str], None]
@@ -220,20 +219,22 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
     Phase 2 rather than being guessed at.
     """
     release_known = at_ref is not None
-    tree: Dict[str, str] = {}
-    if release_known:
-        tree, _ = gh.fetch_tree(gh.Source(src.repo, at_ref, src.subpath), transport)
-        tree = PL.select(tree, include)
+    # Paths to match on always come from a tree - at the named release when we
+    # have one, otherwise at the current ref. Without this an unknown-release
+    # adopt has nothing to match and silently records an empty manifest.
+    match_ref = at_ref or src.ref
+    tree, _ = gh.fetch_tree(gh.Source(src.repo, match_ref, src.subpath), transport)
+    tree = PL.select(tree, include)
 
-    # Data Panel contents keyed the same way the manifest is.
+    # One walk of the Data Panel - it is expensive against the real API.
+    panel_contents = panel.scan()
     local: Dict[str, str] = {}
     by_name: Dict[Tuple[Tuple[str, ...], str], str] = {}
-    for folders, files in panel.scan().items():
+    for folders, files in panel_contents.items():
         for f in files:
             by_name[(folders, f.name)] = f.lineage
 
-    candidates = tree if release_known else {}
-    for repo_path in (candidates or {}):
+    for repo_path in tree:
         try:
             pp = P.map_path(repo_path, src.subpath)
         except P.PathError:
@@ -245,7 +246,7 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
     stats = {
         "matched": len(local),
         "in_release": len(tree),
-        "in_panel": sum(len(v) for v in panel.scan().values()),
+        "in_panel": sum(len(v) for v in panel_contents.values()),
     }
     stats["missing"] = stats["in_release"] - stats["matched"]
 
