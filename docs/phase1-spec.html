@@ -1,0 +1,474 @@
+<title>Lockstep Phase One</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+
+<style>
+  :root{
+    --ground:#F1F4F9;
+    --surface:#FFFFFF;
+    --surface-2:#E6EAF3;
+    --ink:#111621;
+    --ink-2:#465269;
+    --ink-3:#6C7890;
+    --rule:#D5DBE7;
+    --rule-strong:#B2BCCD;
+    --accent:#33459B;
+    --accent-soft:#DFE4F6;
+    --ok:#186845;
+    --ok-soft:#D9EDE3;
+    --warn:#8A6008;
+    --warn-soft:#F4E9CE;
+    --stop:#9E2C2C;
+    --stop-soft:#F6DEDE;
+    --disp:Archivo,"Helvetica Neue",Arial,sans-serif;
+    --body:"Public Sans",-apple-system,"Segoe UI",sans-serif;
+    --mono:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0E121A;
+      --surface:#161C27;
+      --surface-2:#1E2631;
+      --ink:#E7ECF4;
+      --ink-2:#A0ACC2;
+      --ink-3:#77849C;
+      --rule:#28313E;
+      --rule-strong:#3A4555;
+      --accent:#8DA0F5;
+      --accent-soft:#1D2440;
+      --ok:#4FC08D;
+      --ok-soft:#14301F;
+      --warn:#D8A93F;
+      --warn-soft:#332711;
+      --stop:#EA7A7E;
+      --stop-soft:#361B1D;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0E121A;
+    --surface:#161C27;
+    --surface-2:#1E2631;
+    --ink:#E7ECF4;
+    --ink-2:#A0ACC2;
+    --ink-3:#77849C;
+    --rule:#28313E;
+    --rule-strong:#3A4555;
+    --accent:#8DA0F5;
+    --accent-soft:#1D2440;
+    --ok:#4FC08D;
+    --ok-soft:#14301F;
+    --warn:#D8A93F;
+    --warn-soft:#332711;
+    --stop:#EA7A7E;
+    --stop-soft:#361B1D;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--ground);color:var(--ink);font-family:var(--body);
+       font-size:16.5px;line-height:1.62;-webkit-font-smoothing:antialiased}
+  .page{max-width:1080px;margin:0 auto;padding:0 26px 90px}
+  .col{max-width:70ch}
+
+  header.mast{padding:58px 0 34px;border-bottom:3px solid var(--ink);margin-bottom:40px}
+  .eyebrow{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.15em;
+           text-transform:uppercase;color:var(--accent);margin-bottom:20px}
+  h1{font-family:var(--disp);font-weight:700;font-size:clamp(2.4rem,6vw,3.9rem);
+     line-height:1.02;letter-spacing:-.028em;margin:0 0 18px;text-wrap:balance}
+  .standfirst{font-size:clamp(1.05rem,2.1vw,1.24rem);line-height:1.55;color:var(--ink-2);
+              max-width:62ch;margin:0 0 26px}
+  .meta{display:flex;flex-wrap:wrap;gap:0 30px;font-family:var(--mono);font-size:11.5px;
+        color:var(--ink-3)}
+  .meta b{color:var(--ink-2);font-weight:500}
+
+  section{margin-bottom:54px}
+  .snum{font-family:var(--mono);font-size:11.5px;font-weight:700;letter-spacing:.12em;
+        color:var(--accent);display:block;margin-bottom:7px}
+  h2.sec{font-family:var(--disp);font-weight:600;font-size:clamp(1.45rem,3vw,1.95rem);
+         line-height:1.14;letter-spacing:-.018em;margin:0 0 18px;padding-bottom:12px;
+         border-bottom:1px solid var(--rule);text-wrap:balance}
+  h3.sub{font-family:var(--disp);font-weight:600;font-size:1.02rem;margin:30px 0 9px}
+  p{margin:0 0 16px}
+  .col p,.col ul,.col ol{max-width:70ch}
+  a{color:var(--accent);text-underline-offset:2px}
+  a:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface-2);
+       padding:1px 5px;border-radius:2px}
+
+  pre{font-family:var(--mono);font-size:12.8px;line-height:1.6;background:var(--surface);
+      border:1px solid var(--rule);border-left:3px solid var(--accent);
+      padding:18px 20px;overflow-x:auto;margin:0 0 16px}
+  pre .c{color:var(--ink-3)}
+  pre .k{color:var(--accent);font-weight:500}
+  pre .g{color:var(--ok);font-weight:500}
+  pre .r{color:var(--stop);font-weight:500}
+
+  .invariant{background:var(--stop-soft);border:1px solid var(--stop);
+             padding:22px 26px;margin:0 0 30px}
+  .invariant .lbl{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.14em;
+                  text-transform:uppercase;color:var(--stop);display:block;margin-bottom:10px}
+  .invariant p{margin:0;font-size:17.5px;line-height:1.5}
+  .invariant strong{font-weight:600}
+
+  .scroll{overflow-x:auto;border:1px solid var(--rule);background:var(--surface);margin:0 0 16px}
+  table{border-collapse:collapse;width:100%;min-width:540px;font-size:14px}
+  th,td{padding:10px 15px;text-align:left;border-bottom:1px solid var(--rule);vertical-align:top}
+  thead th{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.1em;
+           text-transform:uppercase;color:var(--ink-3);background:var(--surface-2);
+           border-bottom:1px solid var(--rule-strong);white-space:nowrap}
+  tbody tr:last-child td{border-bottom:none}
+  td.m{font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+  caption{caption-side:bottom;text-align:left;font-size:12.5px;color:var(--ink-3);
+          padding:11px 15px;border-top:1px solid var(--rule)}
+
+  .pill{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:700;
+        letter-spacing:.07em;text-transform:uppercase;padding:3px 8px;border-radius:2px}
+  .p-in{background:var(--ok-soft);color:var(--ok)}
+  .p-out{background:var(--surface-2);color:var(--ink-3)}
+  .p-warn{background:var(--warn-soft);color:var(--warn)}
+
+  ul.tight,ol.tight{margin:0 0 16px;padding-left:21px}
+  ul.tight li,ol.tight li{margin-bottom:8px}
+
+  .checks{list-style:none;margin:0;padding:0;max-width:74ch}
+  .checks li{position:relative;padding:11px 0 11px 34px;border-bottom:1px solid var(--rule);
+             font-size:15px}
+  .checks li:last-child{border-bottom:none}
+  .checks li::before{content:"";position:absolute;left:2px;top:15px;width:14px;height:14px;
+                     border:1.5px solid var(--rule-strong);border-radius:2px}
+  .checks li b{font-family:var(--mono);font-size:11.5px;color:var(--accent);
+               display:block;margin-bottom:2px;letter-spacing:.06em}
+
+  .note{background:var(--surface-2);border-left:3px solid var(--rule-strong);
+        padding:15px 18px;margin:0 0 16px;font-size:15px;color:var(--ink-2);max-width:72ch}
+
+  footer{border-top:1px solid var(--rule);padding-top:22px;font-size:13.5px;color:var(--ink-3);
+         max-width:74ch}
+
+  @media (max-width:640px){
+    body{font-size:16px}
+    .page{padding:0 16px 60px}
+    pre{font-size:11.8px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="page">
+
+<header class="mast">
+  <div class="eyebrow">Design spec &middot; Phase 1 &middot; working name</div>
+  <h1>Lockstep Phase One</h1>
+  <p class="standfirst">An additive sync from a Git repository into Fusion's Data Panel. Downloads only what changed, never touches a file it already placed, and refuses to guess. Phase 2 &mdash; in-place updates &mdash; is deliberately out of scope.</p>
+  <div class="meta">
+    <span><b>Target</b> Fusion add-in, any repo</span>
+    <span><b>Reference corpus</b> VEX-CAD, 1,193 files</span>
+    <span><b>Status</b> Draft for review</span>
+  </div>
+</header>
+
+<div class="invariant">
+  <span class="lbl">Invariant &mdash; everything else follows from this</span>
+  <p><strong>Never call <code>uploadFile</code> on a path already recorded in the manifest.</strong> Fusion accepts same-named files in one folder without warning, error, or rename. A duplicate upload is silent corruption the user cannot see and cannot undo.</p>
+</div>
+
+<section>
+  <span class="snum">00</span>
+  <h2 class="sec">Scope</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Behaviour</th><th>Phase 1</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Add files new to the target</td><td><span class="pill p-in">In</span></td><td>The whole point</td></tr>
+        <tr><td>Detect changes by content hash</td><td><span class="pill p-in">In</span></td><td>Git blob SHA, one API request</td></tr>
+        <tr><td>Adopt an existing library</td><td><span class="pill p-in">In</span></td><td>Required, not optional &mdash; &sect;05</td></tr>
+        <tr><td>Dry run before any write</td><td><span class="pill p-in">In</span></td><td>Always, no opt-out</td></tr>
+        <tr><td>Update a changed file in place</td><td><span class="pill p-out">Out</span></td><td>Listed and skipped. Phase 2.</td></tr>
+        <tr><td>Delete files removed upstream</td><td><span class="pill p-out">Out</span></td><td>No usable delete in the API. Reported.</td></tr>
+        <tr><td>Track renames and moves</td><td><span class="pill p-out">Out</span></td><td>Reads as add + orphan. Reported.</td></tr>
+        <tr><td>Private repositories</td><td><span class="pill p-out">Out</span></td><td>Needs credential storage. v2.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p>Phase 1 modifies nothing that already exists. Its worst failure mode is a redundant file, never a broken one &mdash; and the invariant above is what keeps even that off the table.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">01</span>
+  <h2 class="sec">Shape</h2>
+  <div class="col">
+    <p>An <strong>add-in</strong>, not a script and not a CLI. The operations it needs &mdash; <code>uploadFile</code>, <code>documents.open</code>, <code>Document.save</code> &mdash; exist only inside Fusion's Python runtime. An add-in persists across restarts and can own a toolbar button; a script cannot.</p>
+    <p>Distribution is GitHub plus GitHubToFusion360 on day one. The Autodesk App Store needs a <code>.bundle</code>, a publisher agreement and a review cycle &mdash; worth doing once the tool is stable and the audience is wider than one Discord.</p>
+  </div>
+<pre><span class="c"># repo layout</span>
+lockstep/
+  Lockstep.py            <span class="c"># add-in entry: run(), stop()</span>
+  Lockstep.manifest
+  core/
+    github.py            <span class="c"># tree fetch, tarball, raw download</span>
+    manifest.py          <span class="c"># load / save / migrate, schema v1</span>
+    datapanel.py         <span class="c"># folder resolution, upload, scan</span>
+    plan.py              <span class="c"># diff -&gt; add / change / orphan sets</span>
+    paths.py             <span class="c"># repo path -&gt; Data Panel path</span>
+  ui/
+    dialog.py            <span class="c"># command inputs, dry-run preview</span>
+    progress.py
+  tests/
+    fixtures/            <span class="c"># small synthetic repo trees</span>
+</pre>
+  <div class="note"><strong>Name is provisional.</strong> &ldquo;Lockstep&rdquo; is a placeholder chosen so the spec reads cleanly. Whatever it ends up as, keep VEX out of it &mdash; the tool is general and the reference corpus is not the product.</div>
+</section>
+
+<section>
+  <span class="snum">02</span>
+  <h2 class="sec">Configuration</h2>
+  <div class="col">
+    <p>One config, many sources. A user syncing three libraries is the normal case, not an edge case.</p>
+  </div>
+<pre>{
+  <span class="k">"schema"</span>: 1,
+  <span class="k">"sources"</span>: [
+    {
+      <span class="k">"id"</span>: "vex-cad",                    <span class="c">// stable key, names the manifest file</span>
+      <span class="k">"label"</span>: "VEX CAD Library",
+      <span class="k">"repo"</span>: "VEX-CAD/VEX-CAD-Fusion-360-Library",
+      <span class="k">"ref"</span>: "main",                       <span class="c">// branch or tag</span>
+      <span class="k">"subpath"</span>: "",                       <span class="c">// sync only below this</span>
+      <span class="k">"include"</span>: ["**/*.f3d", "**/*.step"],
+      <span class="k">"exclude"</span>: ["**/_archive/**"],
+      <span class="k">"target"</span>: {
+        <span class="k">"project_id"</span>: "urn:adsk...",       <span class="c">// resolved once, then stored</span>
+        <span class="k">"folder_path"</span>: "Libraries/VEX"      <span class="c">// created if absent</span>
+      }
+    }
+  ]
+}</pre>
+  <div class="col">
+    <p>Store <code>project_id</code>, never the project <em>name</em> &mdash; names are editable and duplicable. Resolve the folder path to a <code>DataFolder</code> id on first sync and cache that too.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">03</span>
+  <h2 class="sec">Manifest</h2>
+  <div class="col">
+    <p>One manifest per source. This is the entire state of the system, and its job is to answer one question for every path: <em>have I already placed this, and which cloud file is it?</em></p>
+  </div>
+<pre>{
+  <span class="k">"schema"</span>: 1,
+  <span class="k">"source_id"</span>: "vex-cad",
+  <span class="k">"repo"</span>: "VEX-CAD/VEX-CAD-Fusion-360-Library",
+  <span class="k">"ref"</span>: "main",
+  <span class="k">"synced_commit"</span>: "f13995dd65f5...",   <span class="c">// tree we last reconciled against</span>
+  <span class="k">"synced_at"</span>: "2026-09-06T20:50:00Z",
+  <span class="k">"files"</span>: {
+    <span class="k">"Motion/LS Shaft.f3d"</span>: {
+      <span class="k">"blob"</span>:    "a3f9c1...",             <span class="c">// git blob SHA - change detection</span>
+      <span class="k">"lineage"</span>: "urn:adsk.wipprod:dm.lineage:n-W4fL...",
+      <span class="k">"version"</span>: 1,
+      <span class="k">"state"</span>:   "placed",               <span class="c">// placed | inflight | adopted</span>
+      <span class="k">"at"</span>:      "2026-09-06T20:44:11Z"
+    }
+  }
+}</pre>
+  <div class="col">
+    <h3 class="sub">Why lineage, never name</h3>
+    <p>Testing confirmed Fusion will hold three files called <code>SyncProbe</code> in one folder, each on its own lineage URN, with no suffix and no complaint. Name lookup would silently pick the wrong one. The lineage URN is the only stable identity, and it is what Phase 2 will need to open a file for update.</p>
+    <h3 class="sub">Where it lives</h3>
+    <p>A JSON file beside the add-in, one per source. This is per-machine, so a user on a laptop and a desktop has two views of one cloud library &mdash; accepted for v1, mitigated by <code>rebuild-from-folder</code> (&sect;05) being a first-class command rather than a recovery hack.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">04</span>
+  <h2 class="sec">The sync algorithm</h2>
+<pre><span class="k">plan</span>(source):
+    tree     = GET /repos/{repo}/git/trees/{ref}?recursive=1   <span class="c"># 1 request</span>
+    remote   = { path: blob_sha  for path in tree if matches include/exclude }
+    manifest = load(source.id)
+
+    add    = { p for p in remote if p not in manifest }
+    change = { p for p in remote if p in manifest
+                                 and remote[p] != manifest[p].blob }
+    orphan = { p for p in manifest if p not in remote }
+    <span class="k">return</span> add, change, orphan
+
+<span class="k">apply</span>(plan):                       <span class="c"># only after the user confirms a dry run</span>
+    <span class="g">for p in add:</span>                    <span class="c"># the only writing path in Phase 1</span>
+        mark_inflight(p)
+        blob = download(p)
+        df   = folder_for(p).uploadFile(blob)
+        wait(df)                      <span class="c"># DataFileFuture -&gt; Finished</span>
+        record(p, blob_sha, df.id, "placed")
+        flush_manifest()              <span class="c"># after every file, not at the end</span>
+
+    <span class="r">for p in change: report_only(p)</span>   <span class="c"># Phase 2</span>
+    <span class="r">for p in orphan: report_only(p)</span>   <span class="c"># cannot delete</span>
+</pre>
+  <div class="col">
+    <p>Three sets, one write path. Everything risky is a report until Phase 2 earns the right to act on it.</p>
+    <p><strong>Flush after every file, not at the end.</strong> A crash mid-sync must leave a manifest that accurately describes what is in the cloud &mdash; otherwise the next run re-uploads and violates the invariant.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">05</span>
+  <h2 class="sec">Adopt mode &mdash; the one that decides adoption</h2>
+  <div class="col">
+    <p>Every existing user of the VEX library has 1,193 files already imported and <strong>no manifest</strong>. Point a naive sync at their folder and it sees 1,193 unknown paths, uploads all of them, and doubles their entire library in silence. This is not an edge case; it is the majority of the userbase on day one.</p>
+
+    <h3 class="sub">Adopt against a release, not against HEAD</h3>
+    <p>The obvious implementation &mdash; match local files to the current tree and record today's blob SHAs &mdash; is wrong. A user whose library came from v2.0.3 would have their stale files recorded as current, and those files would never update again.</p>
+    <p>Instead, <strong>ask which release they installed</strong> and adopt against <em>that</em> tag's tree. Their manifest then honestly describes what they have, and the very next sync computes a correct delta from v2.0.3 to HEAD.</p>
+  </div>
+<pre><span class="k">adopt</span>(source, from_ref):
+    tree  = tree_at(from_ref)                 <span class="c"># e.g. tag v2.0.3</span>
+    local = scan(target_folder)               <span class="c"># {relative path: DataFile}</span>
+
+    matched   = paths in both
+    only_here = paths in local, not in tree   <span class="c"># user's own files - leave alone</span>
+    missing   = paths in tree, not in local   <span class="c"># becomes 'add' on first sync</span>
+
+    <span class="c"># dry run reports all three counts and stops</span>
+    <span class="k">on confirm:</span>
+        for p in matched:
+            record(p, tree[p].blob, local[p].id, state="adopted")
+</pre>
+  <div class="col">
+    <p>Adoption writes manifest entries and <strong>uploads nothing</strong>. If the user cannot say which release they have, offer &ldquo;unknown&rdquo;: record the lineage with <code>blob: null</code>, which marks every file as needing verification and defers it to Phase 2 rather than guessing.</p>
+    <p>The same scan powers <code>rebuild-from-folder</code>, the recovery path for a lost or stale manifest.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">06</span>
+  <h2 class="sec">Path mapping</h2>
+  <div class="col">
+    <p>Repo paths are not Data Panel paths, and the reference corpus is a good adversary. Measured against VEX-CAD at v2.0.5:</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Property</th><th class="m">Value</th><th>Consequence</th></tr></thead>
+      <tbody>
+        <tr><td>Deepest nesting</td><td class="m">7 levels</td><td>Folder creation must be recursive and cached</td></tr>
+        <tr><td>Longest path</td><td class="m">135 chars</td><td>Check Fusion's limit before assuming it fits</td></tr>
+        <tr><td>Non-ASCII names</td><td class="m">5 files</td><td><code>0.5&rdquo; OD HS Spacer&hellip;</code> uses U+201D, not a straight quote</td></tr>
+        <tr><td>Leading punctuation</td><td class="m">1 file</td><td><code>! Unpin metal, move in&hellip;</code> &mdash; sorts oddly, may confuse pickers</td></tr>
+        <tr><td>Characters in use</td><td class="m">! &amp; ( ) + , - &rdquo;</td><td>Commas and parens are normal here, not exceptional</td></tr>
+      </tbody>
+    </table>
+    <caption>Measured with <code>git ls-files</code> across 1,193 tracked files.</caption>
+  </div>
+  <div class="col">
+    <h3 class="sub">Rules</h3>
+    <ol class="tight">
+      <li><strong>Preserve names verbatim</strong> wherever Fusion accepts them. Renaming breaks the user's mental map of the library.</li>
+      <li><strong>Never normalise Unicode.</strong> Folding U+201D to <code>"</code> would make the manifest path and the repo path disagree, and every subsequent sync would see a phantom change.</li>
+      <li><strong>Strip the extension</strong> for the Data Panel name &mdash; Fusion supplies its own &mdash; but key the manifest on the <em>repo</em> path including extension.</li>
+      <li><strong>If a name must be altered</strong> to be accepted, record both the repo path and the placed name in the manifest, and surface it in the report. A silent rename is a future duplicate.</li>
+    </ol>
+  </div>
+</section>
+
+<section>
+  <span class="snum">07</span>
+  <h2 class="sec">Failure and resume</h2>
+  <div class="col">
+    <p>Uploads are asynchronous and slow &mdash; measured at 18.3s and 7.2s for a single 155&nbsp;KB file. A first sync is thousands of them. It <em>will</em> be interrupted.</p>
+    <p>The dangerous window is between a successful upload and the manifest write recording it. Crash there and the next run re-uploads a file that already exists, which is exactly the invariant violation.</p>
+  </div>
+<pre><span class="c"># two-phase record closes the window</span>
+mark_inflight(path)      <span class="c"># written BEFORE the upload starts</span>
+upload &rarr; wait &rarr; ok
+record(path, ..., "placed")
+
+<span class="c"># on next launch</span>
+<span class="k">for</span> p <span class="k">in</span> manifest <span class="k">where</span> state == "inflight":
+    <span class="c"># truth is in the cloud, not the manifest - go look</span>
+    hits = scan_folder_for(p)
+    <span class="k">if</span> len(hits) == 1: record(p, ..., "placed")     <span class="c"># it landed</span>
+    <span class="k">elif</span> len(hits) == 0: drop(p)                    <span class="c"># retry safely</span>
+    <span class="k">else</span>: <span class="r">flag_for_human(p)</span>                       <span class="c"># already duplicated</span>
+</pre>
+  <div class="col">
+    <p>A file that fails mid-run is logged and skipped; the run continues and reports failures at the end. One bad file must never abort a 1,193-file sync.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">08</span>
+  <h2 class="sec">Network</h2>
+  <div class="col">
+    <p>Two download strategies, chosen by size &mdash; because the bootstrap case and the update case are not the same problem.</p>
+    <ul class="tight">
+      <li><strong>Bootstrap</strong> (hundreds of files): fetch <code>codeload.github.com/{repo}/tar.gz/{ref}</code> once and unpack. One connection instead of 1,193.</li>
+      <li><strong>Delta</strong> (tens of files): fetch each from <code>raw.githubusercontent.com</code>. Not counted against the API rate limit.</li>
+      <li><strong>Threshold:</strong> start at 100 files, tune with real timings.</li>
+    </ul>
+    <p>The tree request is the only call against the API proper &mdash; one per sync, against an unauthenticated limit of 60/hour. Ample, and a headroom check should still fail loudly rather than mysteriously.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">09</span>
+  <h2 class="sec">User flow</h2>
+  <div class="col">
+    <p>Every path through the tool ends in a preview the user must confirm. There is no fire-and-forget mode in Phase 1.</p>
+  </div>
+<pre>Utilities &rarr; Lockstep &rarr; Sync Library
+
+  first run   &rarr; no manifest found
+                &rarr; "Do you already have this library imported?"
+                   yes &rarr; ADOPT: pick release &rarr; dry run &rarr; confirm
+                   no  &rarr; FRESH: pick project + folder &rarr; dry run &rarr; confirm
+
+  later runs  &rarr; fetch tree, diff, dry run:
+
+                   <span class="g">+ 25 files to add          117 MB    ~4 min</span>
+                   <span class="warn">~  2 files changed         skipped   (Phase 2)</span>
+                   <span class="c">-  0 files gone upstream    reported</span>
+
+                &rarr; [Cancel]  [Sync]
+</pre>
+  <div class="col">
+    <p>Progress shows current file, count and elapsed time, and stays cancellable &mdash; a cancel mid-run is safe by construction, because the manifest is flushed per file.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">10</span>
+  <h2 class="sec">Acceptance criteria</h2>
+  <ul class="checks">
+    <li><b>A1 &middot; idempotence</b>Running sync twice with no upstream change uploads zero files and leaves the folder count unchanged.</li>
+    <li><b>A2 &middot; adoption</b>Adopting an existing 1,193-file library uploads nothing and produces a manifest with 1,193 entries.</li>
+    <li><b>A3 &middot; delta</b>Adopting at v2.0.3, then syncing to v2.0.5, adds exactly the files those releases added &mdash; and nothing else.</li>
+    <li><b>A4 &middot; crash safety</b>Killing Fusion mid-sync and relaunching produces no duplicates; inflight entries reconcile against the cloud.</li>
+    <li><b>A5 &middot; hostile paths</b>All five U+201D filenames and the leading-<code>!</code> file round-trip: placed, recorded, and seen as unchanged on the next run.</li>
+    <li><b>A6 &middot; no silent rename</b>Any name altered to satisfy Fusion appears in the run report.</li>
+    <li><b>A7 &middot; failure isolation</b>One unreachable file does not abort the run and is listed at the end.</li>
+    <li><b>A8 &middot; read-only honesty</b>A dry run writes nothing &mdash; verified by comparing folder contents and manifest before and after.</li>
+  </ul>
+  <div class="col">
+    <p style="margin-top:18px">A3 and A5 are the ones that will actually fail first. Build fixtures for them before building the UI.</p>
+  </div>
+</section>
+
+<section>
+  <span class="snum">11</span>
+  <h2 class="sec">Open questions</h2>
+  <div class="col">
+    <ul class="tight">
+      <li><strong>Fusion's path and name limits.</strong> The 135-character path is untested. Find the ceiling before a user does.</li>
+      <li><strong>Does <code>uploadFile</code> preserve the filename exactly</strong> for the U+201D cases, or does it normalise? Determines whether rule&nbsp;2 in &sect;06 is sufficient.</li>
+      <li><strong>Bootstrap throughput.</strong> At ~8&ndash;18s per upload, 1,193 files is hours, not the ~7 minutes <code>fusion-batch-import</code> reports. Understand that gap before promising a number.</li>
+      <li><strong>Multi-machine manifests.</strong> Accepted as broken in v1. Fusion document attributes could make the cloud data self-describing, at the cost of an open per file.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <p>Import approach follows <a href="https://github.com/zeulewan/fusion-batch-import">zeulewan/fusion-batch-import</a>, which proved Data&nbsp;Panel bulk import with folder structure preserved. Sizes and churn measured from the VEX-CAD repository at tags v2.0.0&ndash;v2.0.5; upload latency and the duplicate-on-re-upload behaviour measured against a live Fusion project on 6 September 2026.</p>
+</footer>
+
+</div>
