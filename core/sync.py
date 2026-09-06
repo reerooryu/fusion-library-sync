@@ -109,7 +109,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         return report
 
     own_workdir = workdir is None
-    workdir = workdir or tempfile.mkdtemp(prefix="lockstep-")
+    workdir = workdir or tempfile.mkdtemp(prefix="detent-")
     try:
         wanted = [pp.repo_path for pp in mapped]
         fetched, fetch_failures = gh.fetch_files(

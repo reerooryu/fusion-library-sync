@@ -34,7 +34,7 @@ class UrllibTransport:
         self.timeout = timeout
 
     def _req(self, url: str) -> urllib.request.Request:
-        headers = {"User-Agent": "lockstep", "Accept": "application/vnd.github+json"}
+        headers = {"User-Agent": "detent", "Accept": "application/vnd.github+json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return urllib.request.Request(url, headers=headers)

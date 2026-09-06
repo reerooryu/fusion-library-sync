@@ -1,4 +1,4 @@
-# Lockstep
+# Detent
 
 Incremental sync of a Git-hosted CAD library into Autodesk Fusion's Data Panel.
 
@@ -29,7 +29,7 @@ preventing that.
 ## Layout
 
 ```
-Lockstep.py        add-in entry: Utilities > ADD-INS > Sync Library
+Detent.py          add-in entry: Utilities > ADD-INS > Sync Library
 config.json        which libraries to sync (created on first run)
 core/config.py     config schema, repo-URL normalisation
 core/paths.py      repo path -> Data Panel location
@@ -53,6 +53,11 @@ python3 -m pytest tests/ -q
 1. Install **GitHubToFusion360** from the Autodesk App Store (once, ever)
 2. Run it, paste this repo's URL (once, ever)
 3. Fusion → **Utilities → ADD-INS → Sync Library**
+
+Fusion finds an add-in by looking for `<folder>.py` inside the add-in folder,
+so the entry points here are `Detent.py` and `Detent.manifest`. If your
+installer drops the repo into a folder with a different name, rename that
+folder to `Detent`.
 
 VEX-CAD is preconfigured, so there is no second URL to paste. Add your own
 libraries by editing `config.json` beside the add-in.

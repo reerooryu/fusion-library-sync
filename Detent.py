@@ -20,7 +20,7 @@ from core import sync as S              # noqa: E402
 from core import fusion_project as FP   # noqa: E402
 from core.datapanel import FusionDataPanel  # noqa: E402
 
-CMD_ID = "LockstepSyncLibrary"
+CMD_ID = "DetentSyncLibrary"
 CMD_NAME = "Sync Library"
 CMD_TIP = ("Sync a Git-hosted CAD library into this project.\n\n"
            "Downloads only what changed. Never modifies a file it has "
@@ -105,7 +105,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             cmd.execute.add(on_exec)
             _handlers.append(on_exec)
         except Exception:
-            _ui().messageBox(f"Lockstep failed to open:\n{traceback.format_exc()}")
+            _ui().messageBox(f"Detent failed to open:\n{traceback.format_exc()}")
 
 
 def _config_note(cfg) -> str:
@@ -160,7 +160,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 _do_sync(ui, src, manifest_path, panel, transport, source,
                          write=action.startswith("Sync"))
         except Exception:
-            ui.messageBox(f"Lockstep failed:\n{traceback.format_exc()}")
+            ui.messageBox(f"Detent failed:\n{traceback.format_exc()}")
 
 
 def _pick_project(name, log):
@@ -174,7 +174,7 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     """Always plan first. Writing requires a second, explicit yes."""
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = False
-    progress.show("Lockstep", "Reading %v...", 0, 1)
+    progress.show("Detent", "Reading %v...", 0, 1)
     adsk.doEvents()
     try:
         plan, _ = S.sync(src, manifest_path, panel, transport,
@@ -183,27 +183,27 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
         progress.hide()
 
     if plan.is_empty:
-        ui.messageBox("Everything is up to date.", "Lockstep")
+        ui.messageBox("Everything is up to date.", "Detent")
         return
 
     summary = _plan_text(plan, source)
     if not write:
-        ui.messageBox(summary, "Lockstep - preview")
+        ui.messageBox(summary, "Detent - preview")
         return
 
     if not plan.add:
         ui.messageBox(summary + "\n\nNothing to add. Changed and removed files "
-                                "need Phase 2.", "Lockstep")
+                                "need Phase 2.", "Detent")
         return
 
     answer = ui.messageBox(summary + f"\n\nUpload {len(plan.add)} file(s)?",
-                           "Lockstep", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
+                           "Detent", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
     if answer != adsk.core.DialogResults.DialogYes:
         return
 
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = True
-    progress.show("Lockstep", "%v of %m - %p%%", 0, max(len(plan.add), 1))
+    progress.show("Detent", "%v of %m - %p%%", 0, max(len(plan.add), 1))
 
     def on_progress(i, total, label):
         progress.progressValue = min(i, total)
@@ -216,21 +216,21 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     finally:
         progress.hide()
 
-    ui.messageBox(_report_text(report, manifest_path), "Lockstep - done")
+    ui.messageBox(_report_text(report, manifest_path), "Detent - done")
 
 
 def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
     if os.path.exists(manifest_path):
         answer = ui.messageBox(
             "A manifest already exists for this library. Adopting will replace "
-            "it.\n\nContinue?", "Lockstep",
+            "it.\n\nContinue?", "Detent",
             adsk.core.MessageBoxButtonTypes.YesNoButtonType)
         if answer != adsk.core.DialogResults.DialogYes:
             return
 
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = False
-    progress.show("Lockstep", "Scanning existing library...", 0, 1)
+    progress.show("Detent", "Scanning existing library...", 0, 1)
     adsk.doEvents()
     try:
         manifest, stats = S.adopt_existing(
@@ -251,14 +251,14 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
         text += ("\n\nNo release given: files are recorded as unverified "
                  "rather than assumed current.")
 
-    answer = ui.messageBox(text + "\n\nWrite the manifest?", "Lockstep",
+    answer = ui.messageBox(text + "\n\nWrite the manifest?", "Detent",
                            adsk.core.MessageBoxButtonTypes.YesNoButtonType)
     if answer != adsk.core.DialogResults.DialogYes:
         return
 
     manifest.save(manifest_path)
     ui.messageBox(f"Adopted {stats['matched']} file(s).\n\n{manifest_path}",
-                  "Lockstep")
+                  "Detent")
 
 
 def _plan_text(plan, source) -> str:
@@ -318,7 +318,7 @@ def run(context):
             panel.controls.addCommand(cmd_def)
     except Exception:
         try:
-            _ui().messageBox(f"Lockstep failed to load:\n{traceback.format_exc()}")
+            _ui().messageBox(f"Detent failed to load:\n{traceback.format_exc()}")
         except Exception:
             pass
 
@@ -337,6 +337,6 @@ def stop(context):
         _handlers.clear()
     except Exception:
         try:
-            _ui().messageBox(f"Lockstep failed to unload:\n{traceback.format_exc()}")
+            _ui().messageBox(f"Detent failed to unload:\n{traceback.format_exc()}")
         except Exception:
             pass
