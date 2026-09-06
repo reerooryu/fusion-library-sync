@@ -196,8 +196,17 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
                                 "need Phase 2.", "Detent")
         return
 
-    answer = ui.messageBox(summary + f"\n\nUpload {len(plan.add)} file(s)?",
-                           "Detent", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
+    n = len(plan.add)
+    est = gh.estimate(n)
+    warn = ""
+    if n >= gh.TARBALL_THRESHOLD:
+        warn = ("\n\nThis is a full first sync. It downloads the whole "
+                "repository in one go and Fusion will be UNRESPONSIVE for "
+                "most of it.\n\nConsider narrowing 'include' in config.json "
+                "and syncing a subset first.")
+    answer = ui.messageBox(
+        f"{summary}\n\nUpload {est}?{warn}",
+        "Detent", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
     if answer != adsk.core.DialogResults.DialogYes:
         return
 
@@ -206,13 +215,24 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     progress.show("Detent", "%v of %m - %p%%", 0, max(len(plan.add), 1))
 
     def on_progress(i, total, label):
+        # Returning False asks core to abort; it is how cancel reaches a
+        # long download.
+        if progress.wasCancelled:
+            return False
+        progress.message = f"{label}  (%v of %m)" if label else "%v of %m - %p%%"
         progress.progressValue = min(i, total)
         adsk.doEvents()
+        return True
 
     try:
         _plan2, report = S.sync(src, manifest_path, panel, transport,
                                 source.include, source.exclude,
                                 dry_run=False, on_progress=on_progress)
+    except gh.Cancelled:
+        progress.hide()
+        ui.messageBox("Cancelled. Nothing was left half-written - rerun to "
+                      "pick up where it stopped.", "Detent")
+        return
     finally:
         progress.hide()
 
@@ -273,6 +293,9 @@ def _plan_text(plan, source) -> str:
     if plan.inflight:
         lines.append(f"  ! {len(plan.inflight):5d}  interrupted, will reconcile")
     if plan.add:
+        lines += ["", f"Estimated: {gh.estimate(len(plan.add))}"]
+        if len(plan.add) >= gh.TARBALL_THRESHOLD:
+            lines.append("Full first sync - downloads the entire repository.")
         lines += ["", "First few:"]
         lines += [f"    {p}" for p in plan.add[:8]]
         if len(plan.add) > 8:

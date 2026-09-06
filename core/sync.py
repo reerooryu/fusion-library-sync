@@ -88,7 +88,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                transport: gh.Transport, commit: Optional[str] = None,
                workdir: Optional[str] = None,
                on_progress: Optional[Progress] = None,
-               dry_run: bool = False) -> Report:
+               dry_run: bool = False,
+               threshold: int = gh.TARBALL_THRESHOLD) -> Report:
     """Additive half of a plan. Writes nothing when dry_run."""
     report = Report(
         skipped_changed=list(plan.change),
@@ -114,7 +115,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         wanted = [pp.repo_path for pp in mapped]
         fetched, fetch_failures = gh.fetch_files(
             src, wanted, workdir, transport, commit,
-            on_progress=lambda i, n, p: on_progress and on_progress(i, n, f"download {p}"),
+            on_progress=lambda i, n, p: on_progress(i, n, p) if on_progress else None,
+            threshold=threshold,
         )
         report.failures.extend(fetch_failures)
 
@@ -166,7 +168,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          include: Sequence[str] = ("**/*.f3d",),
          exclude: Sequence[str] = (),
          dry_run: bool = True,
-         on_progress: Optional[Progress] = None) -> Tuple[PL.Plan, Report]:
+         on_progress: Optional[Progress] = None,
+         threshold: int = gh.TARBALL_THRESHOLD) -> Tuple[PL.Plan, Report]:
     """One full cycle. Defaults to dry_run."""
     transport = transport or gh.UrllibTransport()
 
@@ -184,7 +187,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     selected = PL.select(tree, include, exclude)
     plan = PL.diff(selected, manifest)
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
-                        transport, commit, on_progress=on_progress, dry_run=dry_run)
+                        transport, commit, on_progress=on_progress,
+                        dry_run=dry_run, threshold=threshold)
     report.reconciled = pre.reconciled + report.reconciled
     report.failures = pre.failures + report.failures
     return plan, report

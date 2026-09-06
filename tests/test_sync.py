@@ -365,3 +365,40 @@ class TestAdopt:
         mpath = str(tmp_path / "m.json")
         S.adopt_existing(src, mpath, panel, tr, "v2.0.5", F3D, dry_run=True)
         assert not os.path.exists(mpath)
+
+
+class TestEstimates:
+    """The confirm dialog must be able to state cost, not just a file count."""
+
+    def test_bootstrap_estimate_is_stated_in_hours(self):
+        text = gh.estimate(1198, 2_362_232_012)
+        assert "1198 file" in text and "2.2 GB" in text and "hours" in text
+
+    def test_small_delta_reads_in_minutes(self):
+        assert "min" in gh.estimate(25)
+
+    def test_threshold_marks_a_bootstrap(self):
+        assert 1198 >= gh.TARBALL_THRESHOLD
+        assert 25 < gh.TARBALL_THRESHOLD
+
+
+class TestCancel:
+    """A long download must be interruptible, and leave nothing half-written."""
+
+    class CancellingTransport(FakeTransport):
+        def get_bytes(self, url, on_chunk=None):
+            if on_chunk is not None:
+                on_chunk(1 << 20, 4 << 20)      # caller says stop
+                raise gh.Cancelled("cancelled")
+            return super().get_bytes(url)
+
+    def test_cancel_during_download_writes_nothing(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+        tr = self.CancellingTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+
+        with pytest.raises(gh.Cancelled):
+            S.sync(src, mpath, panel, tr, F3D, dry_run=False, threshold=1)
+
+        assert panel.total_files == 0
+        assert panel.duplicates() == {}

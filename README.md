@@ -64,7 +64,16 @@ libraries by editing `config.json` beside the add-in.
 
 ## Use
 
-**Preview changes** — lists what would move. Writes nothing.
+**Start narrow.** A first sync of the whole VEX library is 2.2 GB and roughly
+four hours of uploads, during which Fusion is largely unresponsive. Set
+`include` to one folder, confirm it works, then widen:
+
+```json
+"include": ["Hardware/Screws/**/*.f3d"]
+```
+
+**Preview changes** — lists what would move, with a size and time estimate.
+Writes nothing.
 
 **Sync now** — previews, asks, then uploads new files only.
 

@@ -43,12 +43,30 @@ class UrllibTransport:
         with urllib.request.urlopen(self._req(url), timeout=self.timeout) as r:
             return json.loads(r.read().decode("utf-8")), dict(r.headers)
 
-    def get_bytes(self, url):
+    def get_bytes(self, url, on_chunk=None):
+        """on_chunk(received, total) is called as data arrives, so a caller on
+        a UI thread can pump events and stay cancellable."""
         with urllib.request.urlopen(self._req(url), timeout=self.timeout) as r:
-            return r.read()
+            if on_chunk is None:
+                return r.read()
+            total = int(r.headers.get("Content-Length") or 0)
+            buf, got = bytearray(), 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                buf += chunk
+                got += len(chunk)
+                if on_chunk(got, total) is False:
+                    raise Cancelled("download cancelled")
+            return bytes(buf)
 
 
 class GitHubError(RuntimeError):
+    pass
+
+
+class Cancelled(GitHubError):
     pass
 
 
@@ -120,6 +138,35 @@ def should_use_tarball(n_files: int, threshold: int = TARBALL_THRESHOLD) -> bool
     return n_files >= threshold
 
 
+def human_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def human_duration(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f} sec"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min"
+    return f"{seconds / 3600:.1f} hours"
+
+
+# Measured against a live project: 8-18 s for a 155 KB upload. Deliberately
+# pessimistic - a surprise that is faster than promised is not a bug report.
+SECONDS_PER_UPLOAD = 12.0
+
+
+def estimate(n_files: int, total_bytes: int = 0) -> str:
+    parts = [f"{n_files} file(s)"]
+    if total_bytes:
+        parts.append(human_bytes(total_bytes))
+    parts.append(f"about {human_duration(n_files * SECONDS_PER_UPLOAD)}")
+    return ", ".join(parts)
+
+
 def _safe_members(tar: tarfile.TarFile, dest: str):
     """Reject traversal, absolute paths, links. Never trust an archive."""
     dest_abs = os.path.abspath(dest)
@@ -171,7 +218,15 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
     failures: List[Tuple[str, str]] = []
 
     if should_use_tarball(len(paths), threshold):
-        data = transport.get_bytes(tarball_url(src, commit))
+        def chunk(got, total):
+            if on_progress:
+                pct = f"{got * 100 // total}%" if total else human_bytes(got)
+                return on_progress(0, len(paths), f"downloading {pct}")
+            return None
+        try:
+            data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
+        except TypeError:
+            data = transport.get_bytes(tarball_url(src, commit))
         fetched = extract_tarball(data, dest, wanted=paths)
         for p in paths:
             if p not in fetched:
