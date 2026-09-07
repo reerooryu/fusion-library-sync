@@ -49,8 +49,10 @@ class FakeTransport:
                  "tree": [{"path": p, "type": "blob", "sha": s}
                           for p, s in self.tree.items()]}, {})
 
-    def get_bytes(self, url):
+    def get_bytes(self, url, on_chunk=None):
         self.byte_calls += 1
+        if on_chunk is not None:
+            on_chunk(1, 1)
         path = "/".join(url.split("/")[6:])
         import urllib.parse
         path = urllib.parse.unquote(path)
@@ -263,6 +265,28 @@ class TestHostilePaths:
 
         plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
         assert plan.add == [], "phantom re-add of a non-ASCII path"
+
+    def test_an_altered_name_is_always_reported(self, src, tmp_path):
+        """A name we changed and did not mention becomes tomorrow's duplicate:
+        the manifest keys on the repo path, the panel keys on the name."""
+        tree = {"A/Part .f3d": "sha1", "A/Plain.f3d": "sha2"}
+        panel, tr = FakeDataPanel(), FakeTransport(tree)
+        mpath = str(tmp_path / "m.json")
+
+        _plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+
+        assert rep.renamed == [("A/Part .f3d", "Part")], rep.renamed
+        assert "Part" in [f.name for f in panel.list_folder(panel.folders[("A",)])]
+
+    def test_preview_reports_alterations_before_writing(self, src, tmp_path):
+        tree = {"A/Part .f3d": "sha1"}
+        panel, tr = FakeDataPanel(), FakeTransport(tree)
+
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel, tr, F3D,
+                            dry_run=True)
+
+        assert rep.renamed == [("A/Part .f3d", "Part")]
+        assert panel.total_files == 0, "preview must not write"
 
 
 class TestStrategy:

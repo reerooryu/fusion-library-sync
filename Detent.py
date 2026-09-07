@@ -118,22 +118,50 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 "marked unverified rather than assumed current.")
 
             note = inputs.addTextBoxCommandInput(
-                "note", "", _config_note(cfg), 3, True)
+                "note", "", _config_note(cfg.sources[0] if cfg.sources else None),
+                3, True)
             note.isFullWidth = True
 
             on_exec = ExecuteHandler()
             cmd.execute.add(on_exec)
             _handlers.append(on_exec)
+
+            on_changed = InputChangedHandler(cfg)
+            cmd.inputChanged.add(on_changed)
+            _handlers.append(on_changed)
         except Exception:
             _fail(_ui(), "Detent failed to open")
 
 
-def _config_note(cfg) -> str:
-    if not cfg.sources:
+class InputChangedHandler(adsk.core.InputChangedEventHandler):
+    """Folder and note must follow the Library dropdown. Without this, picking
+    a second library and pressing OK writes the first library's folder into
+    it - and the two libraries land on top of each other."""
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+
+    def notify(self, args):
+        try:
+            if args.input.id != "source":
+                return
+            inputs = args.inputs
+            label = inputs.itemById("source").selectedItem.name
+            source = next((s for s in self.cfg.sources if s.label == label), None)
+            if source is None:
+                return
+            inputs.itemById("folder").value = source.folder_path
+            inputs.itemById("note").text = _config_note(source)
+        except Exception:
+            _fail(_ui(), "Detent failed to switch library")
+
+
+def _config_note(source) -> str:
+    if source is None:
         return f"No sources configured. Edit:\n{CONFIG_PATH}"
-    s = cfg.sources[0]
-    return (f"{s.repo} @ {s.ref}\n"
-            f"Matching: {', '.join(s.include)}\n"
+    return (f"{source.repo} @ {source.ref}\n"
+            f"Matching: {', '.join(source.include)}\n"
             f"Edit sources in config.json beside the add-in.")
 
 

@@ -209,6 +209,10 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     mapped, errors, collisions = P.map_all(plan.add)
     report.unmappable = errors
     report.collisions = collisions
+    # An altered name that nobody sees becomes a duplicate on the next sync,
+    # because the manifest keys on the repo path and the panel keys on the
+    # name. Surface it in preview as well as after writing.
+    report.renamed = [(pp.repo_path, pp.name) for pp in mapped if pp.altered]
     if errors or collisions:
         return report
 

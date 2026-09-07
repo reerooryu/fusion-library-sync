@@ -5,7 +5,7 @@ so the common case never involves pasting a repo URL.
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional
+from typing import List
 import json
 import os
 import re
@@ -65,9 +65,6 @@ class SourceConfig:
 class Config:
     schema: int = SCHEMA
     sources: List[SourceConfig] = field(default_factory=list)
-
-    def get(self, source_id: str) -> Optional[SourceConfig]:
-        return next((s for s in self.sources if s.id == source_id), None)
 
     def to_dict(self) -> dict:
         return {"schema": self.schema, "sources": [asdict(s) for s in self.sources]}

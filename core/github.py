@@ -23,7 +23,7 @@ TARBALL_THRESHOLD = 100
 
 class Transport(Protocol):
     def get_json(self, url: str) -> Tuple[dict, Dict[str, str]]: ...
-    def get_bytes(self, url: str) -> bytes: ...
+    def get_bytes(self, url: str, on_chunk=None) -> bytes: ...
 
 
 class UrllibTransport:
@@ -224,10 +224,7 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 pct = f"{got * 100 // total}%" if total else human_bytes(got)
                 return on_progress(0, len(paths), f"downloading {pct}")
             return None
-        try:
-            data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
-        except TypeError:
-            data = transport.get_bytes(tarball_url(src, commit))
+        data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
         fetched = extract_tarball(data, dest, wanted=paths)
         for p in paths:
             if p not in fetched:

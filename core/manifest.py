@@ -6,7 +6,7 @@ files with one name in a folder, each on its own lineage, without complaint.
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional
 import json
 import os
 import tempfile
@@ -50,9 +50,6 @@ class Manifest:
 
     def get(self, repo_path: str) -> Optional[Entry]:
         return self.files.get(repo_path)
-
-    def paths(self) -> Iterable[str]:
-        return self.files.keys()
 
     def in_state(self, state: str):
         return {p: e for p, e in self.files.items() if e.state == state}

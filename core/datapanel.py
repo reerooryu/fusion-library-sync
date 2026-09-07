@@ -29,11 +29,11 @@ class UploadFailed(RuntimeError):
 
 
 class DataPanel(Protocol):
+    # No blocking upload(): waiting on a future Fusion cannot resolve while
+    # blocked cost 228s per file. Fire with begin_upload, resolve with a scan.
     def ensure_folder(self, folders: Sequence[str]) -> str: ...
     def begin_upload(self, folder_id: str, local_path: str, name: str): ...
     def poll_upload(self, handle) -> Optional[PlacedFile]: ...
-    def upload(self, folder_id: str, local_path: str, name: str,
-               on_wait=None) -> PlacedFile: ...
     def list_folder(self, folder_id: str) -> List[PlacedFile]: ...
     def find_by_name(self, folder_id: str, name: str) -> List[PlacedFile]: ...
     def scan(self) -> Dict[Tuple[str, ...], List[PlacedFile]]: ...
@@ -64,8 +64,9 @@ class FakeDataPanel:
                 self.contents[fid] = []
         return self.folders[key]
 
-    def upload(self, folder_id: str, local_path: str, name: str,
-               on_wait=None) -> PlacedFile:
+    def upload(self, folder_id: str, local_path: str, name: str) -> PlacedFile:
+        """Place a file instantly. Tests use it directly to stage files that
+        arrived by some other route; core never calls it."""
         if name in self.fail_on:
             raise UploadFailed(f"simulated failure for {name!r}")
         if self.crash_after is not None and len(self.uploads) >= self.crash_after:

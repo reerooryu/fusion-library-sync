@@ -63,13 +63,6 @@ class Plan:
         return not (self.add or self.change or self.orphan
                     or self.unverified or self.inflight)
 
-    def summary(self) -> str:
-        return (f"+{len(self.add)} add  "
-                f"~{len(self.change)} changed  "
-                f"-{len(self.orphan)} gone  "
-                f"?{len(self.unverified)} unverified  "
-                f"!{len(self.inflight)} inflight")
-
 
 def diff(remote: Mapping[str, str], manifest: Optional[Manifest]) -> Plan:
     """`remote` must already be filtered by select(), or excluded files read
