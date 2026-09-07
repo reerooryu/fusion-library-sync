@@ -191,7 +191,7 @@ said "upload 1198 files" while meaning "2.2 GB and about four hours". Now
 streamed in 1 MB chunks with a cancel that cancels and a confirm dialog that
 states bytes and time.
 
-## v0.1 — First release
+## v0.1.0 — First release
 
 **Broken. Do not use.** Freezes Fusion for hours on a first sync of any real
 library, with no progress and no working cancel.

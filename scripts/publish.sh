@@ -15,7 +15,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DRY=1
-[ "${1:-}" = "--go" ] && DRY=0
+RETAG=0
+for a in "$@"; do
+  case "$a" in
+    --go) DRY=0 ;;
+    # Tags pushed before a history rewrite still point into the old, orphaned
+    # commits - which is also what keeps GitHub from ever collecting them.
+    # --retag moves them onto the rewritten history and force-pushes.
+    --retag) RETAG=1 ;;
+    *) echo "unknown option: $a"; exit 1 ;;
+  esac
+done
 
 # tag<TAB>commit subject<TAB>prerelease
 #
@@ -26,7 +36,7 @@ DRY=1
 #
 # "HEAD" means whatever is checked out - so run this from the release commit.
 MAP=$(cat <<'MAPEOF'
-v0.1	chore: version 0.1	yes
+v0.1.0	chore: version 0.1	yes
 v0.1.1	fix(github): stream tarball download with progress and cancellation	yes
 v0.1.2	fix(plan): use git-style glob semantics for include patterns	yes
 v0.1.3	fix(ui): distinguish download and upload progress phases	yes
@@ -96,6 +106,7 @@ resolve() {
 
 say "== tags"
 MISSING=0
+MOVED=0
 while IFS=$'\t' read -r tag commit pre; do
   [ -z "$tag" ] && continue
   if ! sha=$(resolve "$commit"); then MISSING=1; continue; fi
@@ -103,7 +114,14 @@ while IFS=$'\t' read -r tag commit pre; do
   if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     have=$(git rev-parse "refs/tags/$tag^{commit}")
     if [ "$have" != "$sha" ]; then
-      say "  !! $tag exists at ${have:0:7}, expected ${sha:0:7} - NOT moved"
+      if [ "$RETAG" = 1 ]; then
+        say "  ->  $tag  ${have:0:7} => ${sha:0:7}  $text"
+        run git tag -f -a "$tag" "$sha" -m "$text"
+        MOVED=1
+      else
+        say "  !! $tag exists at ${have:0:7}, expected ${sha:0:7} - NOT moved"
+        say "     (--retag moves it; without that the old commits stay alive)"
+      fi
     else
       say "  ok $tag -> ${sha:0:7}"
     fi
@@ -122,7 +140,12 @@ fi
 say ""
 say "== push"
 run git push origin HEAD
-run git push origin --tags
+if [ "$MOVED" = 1 ]; then
+  # Moved tags need force; a plain push silently leaves the remote's old one.
+  run git push --force origin --tags
+else
+  run git push origin --tags
+fi
 
 say ""
 say "== releases"
