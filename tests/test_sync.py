@@ -11,11 +11,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import github as gh
-from core import plan as PL
-from core import sync as S
-from core.datapanel import FakeDataPanel, UploadFailed
-from core.manifest import Manifest, INFLIGHT, PLACED
+from detent_core import github as gh
+from detent_core import plan as PL
+from detent_core import sync as S
+from detent_core.datapanel import FakeDataPanel, UploadFailed
+from detent_core.manifest import Manifest, INFLIGHT, PLACED
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 F3D = ("**/*.f3d",)
@@ -205,7 +205,7 @@ class TestFailureIsolation:
 
     def test_upload_failure_is_isolated_and_retryable(self, small_tree, src, tmp_path):
         victim = sorted(small_tree)[2]
-        from core import paths as P
+        from detent_core import paths as P
         panel = FakeDataPanel(fail_on=[P.map_path(victim).name])
         tr = FakeTransport(small_tree)
         mpath = str(tmp_path / "m.json")
@@ -320,7 +320,7 @@ class TestAdopt:
     """Claiming a library the user already imported. Uploads nothing."""
 
     def _panel_with(self, tree, src):
-        from core import paths as P
+        from detent_core import paths as P
         panel = FakeDataPanel()
         for repo_path in tree:
             pp = P.map_path(repo_path)
@@ -601,7 +601,7 @@ class TestAsyncUpload:
         assert entry.state == PLACED
 
     def test_upload_failure_during_settle_is_reported(self, src, tmp_path):
-        from core.datapanel import UploadFailed as UF
+        from detent_core.datapanel import UploadFailed as UF
 
         class Failing(FakeDataPanel):
             def begin_upload(self, folder_id, local_path, name):
@@ -688,7 +688,7 @@ class TestSettleResilience:
         text, so a docstring mentioning it cannot pass or fail us."""
         import ast as _ast
         import inspect
-        from core import datapanel as DP
+        from detent_core import datapanel as DP
 
         for mod in (S, DP):
             tree = _ast.parse(inspect.getsource(mod))
@@ -705,7 +705,7 @@ class TestFusionPollLogic:
     and a mutation flipping the Processing check passed every test."""
 
     def _panel(self):
-        from core.datapanel import FusionDataPanel
+        from detent_core.datapanel import FusionDataPanel
         return object.__new__(FusionDataPanel)      # skip the adsk import
 
     class Future:
@@ -736,19 +736,19 @@ class TestFusionPollLogic:
         assert placed.name == "Part"
 
     def test_failed_state_raises(self):
-        from core.datapanel import UploadFailed
+        from detent_core.datapanel import UploadFailed
         h = {"future": self.Future(2), "name": "Part"}
         with pytest.raises(UploadFailed):
             self._panel().poll_upload(h)
 
     def test_finished_without_a_datafile_raises(self):
-        from core.datapanel import UploadFailed
+        from detent_core.datapanel import UploadFailed
         h = {"future": self.Future(1, None), "name": "Part"}
         with pytest.raises(UploadFailed):
             self._panel().poll_upload(h)
 
     def test_a_raising_future_becomes_UploadFailed_not_a_crash(self):
-        from core.datapanel import UploadFailed
+        from detent_core.datapanel import UploadFailed
         h = {"future": self.Future(0, raises=True), "name": "Part"}
         with pytest.raises(UploadFailed):
             self._panel().poll_upload(h)

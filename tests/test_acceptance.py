@@ -11,9 +11,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import paths as P
-from core import plan as PL
-from core.manifest import Manifest, adopt, PLACED, ADOPTED, INFLIGHT
+from detent_core import paths as P
+from detent_core import plan as PL
+from detent_core.manifest import Manifest, adopt, PLACED, ADOPTED, INFLIGHT
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 F3D_ONLY = ("**/*.f3d",)

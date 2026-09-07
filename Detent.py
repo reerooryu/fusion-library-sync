@@ -1,6 +1,7 @@
 """Add-in entry point: Utilities > ADD-INS > Sync Library.
 
-Presentation only. The risky logic lives in core/ and is tested without Fusion.
+Presentation only. The risky logic lives in detent_core/ and is tested
+without Fusion.
 """
 
 import os
@@ -10,15 +11,31 @@ import traceback
 import adsk.core
 import adsk.fusion
 
+VERSION = "0.3.1"
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from core import config as C            # noqa: E402
-from core import github as gh           # noqa: E402
-from core import sync as S              # noqa: E402
-from core import fusion_project as FP   # noqa: E402
-from core.datapanel import FusionDataPanel  # noqa: E402
+# Fusion re-executes THIS file on every Run but keeps sys.modules, so the
+# package stays at whatever version was first imported into the process.
+# Install an update, Stop, Run, and a new Detent.py calls a stale core - which
+# surfaces as an AttributeError on a field that plainly exists on disk. Only a
+# full Fusion restart cleared it. Drop the package before importing it.
+#
+# The package is detent_core, not core: every add-in shares one interpreter, so
+# a generic name would collide with someone else's - and this loop would then
+# be deleting THEIR modules out from under them.
+for _stale in [n for n in list(sys.modules)
+               if n == "detent_core" or n.startswith("detent_core.")]:
+    del sys.modules[_stale]
+
+from detent_core import VERSION as CORE_VERSION  # noqa: E402
+from detent_core import config as C            # noqa: E402
+from detent_core import github as gh           # noqa: E402
+from detent_core import sync as S              # noqa: E402
+from detent_core import fusion_project as FP   # noqa: E402
+from detent_core.datapanel import FusionDataPanel  # noqa: E402
 
 CMD_ID = "DetentSyncLibrary"
 CMD_NAME = "Sync Library"
@@ -157,12 +174,21 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
             _fail(_ui(), "Detent failed to switch library")
 
 
+def _version_line() -> str:
+    """A mismatch means Fusion served a cached package. Say so here rather
+    than letting it surface later as a missing attribute."""
+    if CORE_VERSION == VERSION:
+        return f"Detent {VERSION}"
+    return (f"Detent {VERSION} but core {CORE_VERSION} - STALE MODULE. "
+            "Restart Fusion.")
+
+
 def _config_note(source) -> str:
     if source is None:
         return f"No sources configured. Edit:\n{CONFIG_PATH}"
     return (f"{source.repo} @ {source.ref}\n"
             f"Matching: {', '.join(source.include)}\n"
-            f"Edit sources in config.json beside the add-in.")
+            f"{_version_line()}")
 
 
 # --------------------------------------------------------------------------
@@ -403,6 +429,14 @@ def run(context):
         panel = ui.allToolbarPanels.itemById(PANEL_ID)
         if panel and not panel.controls.itemById(CMD_ID):
             panel.controls.addCommand(cmd_def)
+
+        # Fail loudly at load, not later at an arbitrary attribute access.
+        if CORE_VERSION != VERSION:
+            ui.messageBox(
+                f"Detent {VERSION} is running against a cached "
+                f"detent_core {CORE_VERSION}.\n\n"
+                "Fusion kept the old modules in memory. Restart Fusion to "
+                "pick up the update - Stop/Run is not enough.", "Detent")
     except Exception:
         try:
             _fail(_ui(), "Detent failed to load")

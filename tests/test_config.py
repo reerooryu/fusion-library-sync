@@ -1,6 +1,6 @@
 import os, sys, json, pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core import config as C
+from detent_core import config as C
 
 
 class TestRepoNormalisation:

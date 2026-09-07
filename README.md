@@ -31,18 +31,18 @@ preventing that.
 ```
 Detent.py          add-in entry: Utilities > ADD-INS > Sync Library
 config.json        which libraries to sync (created on first run)
-core/config.py     config schema, repo-URL normalisation
-core/paths.py      repo path -> Data Panel location
-core/manifest.py   state: have I placed this, and which cloud file is it
-core/plan.py       tree vs manifest -> add / change / orphan / unverified
-core/github.py     resolve ref, read tree, fetch blobs (transport injected)
-core/datapanel.py  Data Panel interface + Fusion impl + a fake that duplicates
-core/sync.py       plan -> confirm -> apply, with crash recovery
-core/fusion_project.py  resolving a project when activeProject throws
+detent_core/config.py     config schema, repo-URL normalisation
+detent_core/paths.py      repo path -> Data Panel location
+detent_core/manifest.py   state: have I placed this, and which cloud file is it
+detent_core/plan.py       tree vs manifest -> add / change / orphan / unverified
+detent_core/github.py     resolve ref, read tree, fetch blobs (transport injected)
+detent_core/datapanel.py  Data Panel interface + Fusion impl + a fake that duplicates
+detent_core/sync.py       plan -> confirm -> apply, with crash recovery
+detent_core/fusion_project.py  resolving a project when activeProject throws
 tests/             acceptance tests against the real corpus
 ```
 
-`core/` has no Fusion dependency and runs anywhere:
+`detent_core/` has no Fusion dependency and runs anywhere:
 
 ```
 python3 -m pytest tests/ -q
@@ -105,7 +105,7 @@ Git source, change detection, and incremental sync.
 
 ## Testing
 
-The fake Data Panel in `core/datapanel.py` reproduces Fusion's dangerous
+The fake Data Panel in `detent_core/datapanel.py` reproduces Fusion's dangerous
 behaviour on purpose: uploading a same-named file into a folder creates a
 second file on a new lineage, silently. A suite that passed against a
 well-behaved fake would prove nothing about the invariant.
@@ -117,7 +117,7 @@ cloud, or ignoring name collisions each fail the test written to catch it.
 ## Not yet done
 
 Phase 1: the add-in shell — toolbar command, dry-run preview, progress UI.
-`core/` is complete and Fusion-free; only the presentation layer is missing.
+`detent_core/` is complete and Fusion-free; only the presentation layer is missing.
 
 Phase 2: in-place updates for changed files. Proven possible against a live
 project (open the file, `BaseFeature.startEdit`, `updateBody`, `finishEdit`,
