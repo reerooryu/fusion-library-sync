@@ -46,6 +46,9 @@ class SourceConfig:
     include: List[str] = field(default_factory=lambda: ["**/*.f3d"])
     exclude: List[str] = field(default_factory=list)
     folder_path: str = ""                 # below the project root
+    # Walk the Data Panel each run to check the manifest is still true. Costs
+    # one listing per folder; without it, files deleted by hand stay invisible.
+    verify_placed: bool = True
 
     def __post_init__(self):
         self.repo = normalise_repo(self.repo)

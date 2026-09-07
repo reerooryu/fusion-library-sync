@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 import re
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Collection, Dict, List, Mapping, Optional, Sequence
 
 from .manifest import Manifest, INFLIGHT
 
@@ -57,16 +57,30 @@ class Plan:
     orphan: List[str] = field(default_factory=list)      # gone upstream -> cannot delete
     unverified: List[str] = field(default_factory=list)  # adopted with unknown blob
     inflight: List[str] = field(default_factory=list)    # interrupted, needs reconcile
+    missing: List[str] = field(default_factory=list)     # manifest says placed, panel disagrees
+    conflict: List[str] = field(default_factory=list)    # gone, but its name is taken
 
     @property
     def is_empty(self) -> bool:
-        return not (self.add or self.change or self.orphan
-                    or self.unverified or self.inflight)
+        return not (self.add or self.change or self.orphan or self.unverified
+                    or self.inflight or self.missing or self.conflict)
+
+    @property
+    def to_place(self) -> List[str]:
+        """Everything this run may upload. Missing files are re-placed: the
+        manifest entry claiming they exist is what turned out to be false."""
+        return self.add + self.missing
 
 
-def diff(remote: Mapping[str, str], manifest: Optional[Manifest]) -> Plan:
+def diff(remote: Mapping[str, str], manifest: Optional[Manifest],
+         missing: Collection[str] = ()) -> Plan:
     """`remote` must already be filtered by select(), or excluded files read
-    as orphans."""
+    as orphans.
+
+    `missing` are paths the manifest calls placed that are no longer in the
+    Data Panel. They outrank every other classification: a file that is not
+    there cannot be up to date, changed, or unverified.
+    """
     plan = Plan()
     files = manifest.files if manifest else {}
 
@@ -74,6 +88,8 @@ def diff(remote: Mapping[str, str], manifest: Optional[Manifest]) -> Plan:
         entry = files.get(path)
         if entry is None:
             plan.add.append(path)
+        elif path in missing:
+            plan.missing.append(path)
         elif entry.state == INFLIGHT:
             plan.inflight.append(path)
         elif entry.blob is None:

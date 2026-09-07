@@ -10,7 +10,7 @@ upload (inflight), again once confirmed (placed), flushed after every file.
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import shutil
 import tempfile
 import time
@@ -19,7 +19,7 @@ from . import github as gh
 from . import paths as P
 from . import plan as PL
 from .datapanel import DataPanel, UploadFailed
-from .manifest import Manifest, INFLIGHT, PLACED, adopt
+from .manifest import Manifest, ADOPTED, INFLIGHT, PLACED, adopt
 
 
 Progress = Callable[[int, int, str], None]
@@ -28,6 +28,7 @@ Progress = Callable[[int, int, str], None]
 @dataclass
 class Report:
     added: List[str] = field(default_factory=list)
+    replaced: List[str] = field(default_factory=list)   # subset of added: were missing
     skipped_changed: List[str] = field(default_factory=list)
     skipped_orphan: List[str] = field(default_factory=list)
     unverified: List[str] = field(default_factory=list)
@@ -36,19 +37,23 @@ class Report:
     reconciled: List[Tuple[str, str]] = field(default_factory=list)
     collisions: Dict[str, List[str]] = field(default_factory=dict)
     unmappable: List[Tuple[str, str]] = field(default_factory=list)
+    conflicts: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.failures and not self.collisions and not self.unmappable
+        return not (self.failures or self.collisions
+                    or self.unmappable or self.conflicts)
 
     def lines(self) -> List[str]:
         rows = [
             ("added", self.added, ""),
+            ("re-placed", self.replaced, "(were gone from the Data Panel)"),
             ("changed upstream", self.skipped_changed, "(Phase 2)"),
             ("gone upstream", self.skipped_orphan, "(cannot delete)"),
             ("unverified", self.unverified, ""),
             ("reconciled", self.reconciled, ""),
             ("renamed", self.renamed, "(see detail)"),
+            ("CONFLICTS", self.conflicts, "(needs a human)"),
             ("failed", self.failures, ""),
             ("COLLISIONS", self.collisions, "(blocked)"),
             ("UNMAPPABLE", self.unmappable, "(blocked)"),
@@ -82,6 +87,62 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel,
             report.failures.append(
                 (repo_path, f"{len(hits)} files already named {pp.name!r} - "
                             "resolve by hand before syncing"))
+
+
+def detect_drift(manifest: Manifest, panel: DataPanel
+                 ) -> Tuple[Set[str], Dict[str, str]]:
+    """Find manifest entries the Data Panel no longer backs up.
+
+    Returns (missing, occupied):
+      missing  - the lineage is gone and nothing holds its name. Safe to
+                 re-place.
+      occupied - the lineage is gone but something else now sits under that
+                 name. NOT safe to re-place, and a human has to look.
+
+    Without this a deleted folder leaves Detent reporting 'up to date' over an
+    empty shelf, which is the worst thing a sync tool can be confidently wrong
+    about.
+
+    Identity is the lineage, never the name: a name match is satisfied by any
+    file that happens to share it. But the name still has to be checked before
+    re-placing, because re-placing is the one path that uploads over a manifest
+    entry - relax that bar on lineage alone and this function becomes a way to
+    manufacture the very duplicates the tool exists to prevent.
+
+    A scan that fails returns nothing rather than everything. Read as 'it is
+    all gone', one transient API error would re-upload an entire library on top
+    of itself. A false negative costs a stale row; a false positive costs
+    duplicates nobody can undo.
+
+    NOTE: maps without the source subpath, matching apply_plan and
+    reconcile_inflight. adopt_existing maps WITH it, so the two disagree for a
+    source that sets one. Unused today; tracked separately.
+    """
+    try:
+        scan = panel.scan()
+    except Exception:                                  # noqa: BLE001
+        return set(), {}
+
+    present = {f.lineage for files in scan.values() for f in files}
+    names = {folders: {f.name for f in files} for folders, files in scan.items()}
+
+    missing: Set[str] = set()
+    occupied: Dict[str, str] = {}
+    for path, entry in manifest.files.items():
+        if entry.state not in (PLACED, ADOPTED) or not entry.lineage:
+            continue
+        if entry.lineage in present:
+            continue
+        try:
+            pp = P.map_path(path)
+        except P.PathError:
+            continue
+        want = entry.placed_name or pp.name
+        if want in names.get(pp.folders, frozenset()):
+            occupied[path] = want
+        else:
+            missing.add(path)
+    return missing, occupied
 
 
 def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
@@ -201,12 +262,17 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         skipped_changed=list(plan.change),
         skipped_orphan=list(plan.orphan),
         unverified=list(plan.unverified),
+        conflicts=[(p, "gone from the Data Panel, but its name is taken - "
+                       "resolve by hand") for p in plan.conflict],
     )
+    # Files the manifest claims but the Data Panel does not have. The stale
+    # entry is the thing standing between them and a re-upload, so it goes.
+    replace = set(plan.missing)
 
     # Map every path first. A collision or an unmappable path blocks the run:
     # two repo files landing on one Data Panel name is how a library silently
     # loses a part.
-    mapped, errors, collisions = P.map_all(plan.add)
+    mapped, errors, collisions = P.map_all(plan.to_place)
     report.unmappable = errors
     report.collisions = collisions
     # An altered name that nobody sees becomes a duplicate on the next sync,
@@ -242,8 +308,11 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
             if not local:
                 continue                      # already recorded as a fetch failure
 
-            # Belt and braces: never upload something the manifest knows.
-            if pp.repo_path in manifest and manifest.get(pp.repo_path).state != INFLIGHT:
+            # Belt and braces: never upload something the manifest knows -
+            # unless we have just confirmed the file it points at is gone.
+            known = manifest.get(pp.repo_path)
+            if (known is not None and known.state != INFLIGHT
+                    and pp.repo_path not in replace):
                 continue
 
             folder = panel.ensure_folder(pp.folders)
@@ -268,6 +337,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                    handles, on_progress, settle_wait,
                    mapped_by_path={pp.repo_path: pp for pp in mapped})
 
+        report.replaced = [p for p in report.added if p in replace]
+
         manifest.save(manifest_path)
     finally:
         if own_workdir:
@@ -283,8 +354,15 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          dry_run: bool = True,
          on_progress: Optional[Progress] = None,
          threshold: int = gh.TARBALL_THRESHOLD,
-         settle_wait: float = 300.0) -> Tuple[PL.Plan, Report]:
-    """One full cycle. Defaults to dry_run."""
+         settle_wait: float = 300.0,
+         verify_placed: bool = True) -> Tuple[PL.Plan, Report]:
+    """One full cycle. Defaults to dry_run.
+
+    verify_placed walks the Data Panel to check the manifest is still telling
+    the truth. It costs one listing per folder; turning it off makes a sync
+    trust its own bookkeeping, which is fine right up until someone deletes a
+    folder by hand.
+    """
     transport = transport or gh.UrllibTransport()
 
     commit = gh.resolve_commit(src, transport)
@@ -299,7 +377,9 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
         manifest.save(manifest_path)
 
     selected = PL.select(tree, include, exclude)
-    plan = PL.diff(selected, manifest)
+    gone, occupied = detect_drift(manifest, panel) if verify_placed else (set(), {})
+    plan = PL.diff(selected, manifest, missing=gone)
+    plan.conflict = sorted(occupied)
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
                         transport, commit, on_progress=on_progress,
                         dry_run=dry_run, threshold=threshold,

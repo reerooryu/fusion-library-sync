@@ -791,3 +791,150 @@ class TestScanIsTheFastPath:
         assert passes["n"] <= len(folders) + 1, (
             f"{passes['n']} listings for {len(folders)} folders — "
             "should resolve on the first pass")
+
+
+class TestDrift:
+    """The manifest is bookkeeping. When it disagrees with the Data Panel, the
+    Data Panel is right - it is the thing the user can actually see."""
+
+    def test_the_reported_case(self, src, tmp_path):
+        """Sync at v2.0.3, sync at v2.0.5, revert the ref, delete the folder.
+        Before drift detection this reported '0 to add' over an empty folder:
+        a confident all-clear with nothing on the shelf.
+        """
+        repo = "VEX-CAD/VEX-CAD-Fusion-360-Library"
+        old = {f"Field/{i}.f3d": f"sha{i}" for i in range(15)}
+        new = dict(old, **{f"Field/Override/{i}.f3d": f"o{i}" for i in range(33)})
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+
+        S.sync(gh.Source(repo, "v2.0.3"), mpath, panel, FakeTransport(old),
+               F3D, dry_run=False)
+        S.sync(gh.Source(repo, "v2.0.5"), mpath, panel, FakeTransport(new),
+               F3D, dry_run=False)
+        assert len(Manifest.load(mpath).files) == 48
+
+        # user deletes the whole folder by hand
+        for fid in panel.contents:
+            panel.contents[fid] = []
+
+        plan, _ = S.sync(gh.Source(repo, "v2.0.3"), mpath, panel,
+                         FakeTransport(old), F3D, dry_run=True)
+
+        assert plan.orphan and len(plan.orphan) == 33, "33 really are gone upstream"
+        assert plan.add == [], "nothing is new; they are re-placements"
+        assert len(plan.missing) == 15, (
+            "the 15 files that should exist at v2.0.3 are not there")
+        assert not plan.is_empty
+
+    def test_a_sync_puts_missing_files_back_exactly_once(self, small_tree, src,
+                                                         tmp_path):
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        for fid in panel.contents:
+            panel.contents[fid] = []
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False)
+
+        assert len(rep.replaced) == len(small_tree)
+        assert panel.total_files == len(small_tree)
+        assert panel.duplicates() == {}, "re-placing must not double anything"
+
+        _p2, rep2 = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=False)
+        assert rep2.added == [], "and it settles again straight away"
+        assert panel.duplicates() == {}
+
+    def test_only_the_deleted_file_comes_back(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        before = panel.total_files
+
+        victim = None
+        for fid, files in panel.contents.items():
+            if files:
+                victim = files.pop(0)
+                break
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False)
+
+        assert len(rep.replaced) == 1
+        assert panel.total_files == before
+        assert panel.duplicates() == {}
+        assert victim is not None
+
+    def test_a_name_already_taken_is_never_overwritten(self, src, tmp_path):
+        """Someone deleted our file and put their own there under the same
+        name. Re-placing would sit a second file beside it - the exact
+        duplicate this tool exists to prevent. Report, do not upload."""
+        tree = {"A/Part.f3d": "sha1"}
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False)
+
+        folder = panel.folders[("A",)]
+        panel.contents[folder] = []                  # ours is deleted
+        impostor = panel.upload(folder, "/tmp/x", "Part")   # theirs arrives
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                           dry_run=False)
+
+        assert plan.conflict == ["A/Part.f3d"]
+        assert plan.missing == []
+        assert rep.conflicts and not rep.ok
+        assert panel.total_files == 1, "we uploaded nothing"
+        assert panel.list_folder(folder) == [impostor]
+        assert panel.duplicates() == {}
+
+    def test_a_failed_scan_never_re_uploads_the_library(self, small_tree, src,
+                                                        tmp_path):
+        """Reading a broken scan as 'everything is gone' would duplicate an
+        entire library on one transient API error."""
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        before = panel.total_files
+
+        def boom():
+            raise RuntimeError("Data Panel unreachable")
+        panel.scan = boom
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=False)
+
+        assert plan.missing == [] and plan.conflict == []
+        assert panel.total_files == before
+        assert panel.duplicates() == {}
+
+    def test_preview_detects_but_writes_nothing(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        for fid in panel.contents:
+            panel.contents[fid] = []
+
+        plan, _ = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                         dry_run=True)
+
+        assert len(plan.missing) == len(small_tree)
+        assert panel.total_files == 0, "preview re-placed nothing"
+
+    def test_verify_placed_off_keeps_the_old_blindness(self, small_tree, src,
+                                                       tmp_path):
+        """Opting out is allowed - it is a per-folder listing - but it is
+        exactly the blindness that caused this, so it must be deliberate."""
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        for fid in panel.contents:
+            panel.contents[fid] = []
+
+        plan, _ = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                         dry_run=True, verify_placed=False)
+
+        assert plan.missing == []
+        assert plan.is_empty

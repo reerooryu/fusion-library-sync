@@ -227,7 +227,8 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     adsk.doEvents()
     try:
         plan, _ = S.sync(src, manifest_path, panel, transport,
-                         source.include, source.exclude, dry_run=True)
+                         source.include, source.exclude, dry_run=True,
+                         verify_placed=source.verify_placed)
     finally:
         progress.hide()
 
@@ -272,7 +273,8 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     try:
         _plan2, report = S.sync(src, manifest_path, panel, transport,
                                 source.include, source.exclude,
-                                dry_run=False, on_progress=on_progress)
+                                dry_run=False, on_progress=on_progress,
+                                verify_placed=source.verify_placed)
     except gh.Cancelled:
         progress.hide()
         ui.messageBox("Cancelled. Nothing was left half-written - rerun to "
@@ -331,20 +333,25 @@ def _plan_text(plan, source) -> str:
     lines.append(f"  + {len(plan.add):5d}  to add")
     if plan.change:
         lines.append(f"  ~ {len(plan.change):5d}  changed upstream (Phase 2)")
+    if plan.missing:
+        lines.append(f"  * {len(plan.missing):5d}  MISSING from the Data Panel, will re-place")
+    if plan.conflict:
+        lines.append(f"  X {len(plan.conflict):5d}  MISSING but the name is taken - needs a human")
     if plan.orphan:
         lines.append(f"  - {len(plan.orphan):5d}  gone upstream (cannot delete)")
     if plan.unverified:
         lines.append(f"  ? {len(plan.unverified):5d}  unverified")
     if plan.inflight:
         lines.append(f"  ! {len(plan.inflight):5d}  interrupted, will reconcile")
-    if plan.add:
-        lines += ["", f"Estimated: {gh.estimate(len(plan.add))}"]
-        if len(plan.add) >= gh.TARBALL_THRESHOLD:
+    place = plan.to_place
+    if place:
+        lines += ["", f"Estimated: {gh.estimate(len(place))}"]
+        if len(place) >= gh.TARBALL_THRESHOLD:
             lines.append("Full first sync - downloads the entire repository.")
         lines += ["", "First few:"]
-        lines += [f"    {_short(p)}" for p in plan.add[:8]]
-        if len(plan.add) > 8:
-            lines.append(f"    ... and {len(plan.add) - 8} more")
+        lines += [f"    {_short(p)}" for p in place[:8]]
+        if len(place) > 8:
+            lines.append(f"    ... and {len(place) - 8} more")
     return "\n".join(lines)
 
 
@@ -369,6 +376,10 @@ def _report_text(report, manifest_path) -> str:
         lines += [f"  {p}: {m}" for p, m in report.failures[:8]]
         if len(report.failures) > 8:
             lines.append(f"  ... and {len(report.failures) - 8} more")
+    if report.conflicts:
+        lines += ["", "Blocked - recorded as placed, gone, and the name is taken:"]
+        lines += [f"  {_short(p)}" for p, _m in report.conflicts[:8]]
+        lines += ["  Delete the impostor, or re-Adopt the library."]
     if report.renamed:
         lines += ["", "Renamed by Fusion (recorded):"]
         lines += [f"  {p} -> {n}" for p, n in report.renamed[:5]]
