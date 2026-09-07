@@ -54,6 +54,18 @@ class SourceConfig:
         self.repo = normalise_repo(self.repo)
         if not self.id:
             raise ConfigError("source needs an id")
+        if self.subpath.strip("/"):
+            # paths.map_path takes a subpath, and adopt_existing passes it -
+            # but apply_plan, settle, reconcile_inflight and detect_drift do
+            # not. Setting one makes sync mirror the prefix into the Data
+            # Panel while adopt looks for it stripped, so adopt matches
+            # nothing, writes an empty manifest, and the next sync uploads a
+            # duplicate of the entire library. Refuse until it is threaded
+            # through everywhere.
+            raise ConfigError(
+                f"subpath is not supported yet (source {self.id!r}); "
+                "narrow with include patterns instead, e.g. "
+                '"include": ["cad/**/*.f3d"]')
 
     @property
     def folders(self) -> List[str]:

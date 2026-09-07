@@ -47,7 +47,8 @@ v0.2.1	perf(sync): scan folders before polling upload futures	yes
 v0.2.2	fix(ui): populate renamed report and bind folder input to source	yes
 v0.2.3	fix(manifest): stamp ref, commit and timestamp on every sync	yes
 v0.3.0	feat(sync): detect manifest entries missing from the Data Panel	yes
-v0.3.1	HEAD	no
+v0.3.1	docs: rename v0.1 to v0.1.0 and add --retag	yes
+v0.3.2	HEAD	no
 MAPEOF
 )
 

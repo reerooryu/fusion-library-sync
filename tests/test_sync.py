@@ -616,7 +616,11 @@ class TestAsyncUpload:
                            settle_wait=5.0)
 
         assert any("state 2" in msg for _, msg in rep.failures)
-        assert "A/Part.f3d" not in Manifest.load(mpath), "must stay retryable"
+        # begin_upload was already called, so the file may be in the cloud.
+        # Dropping the entry here is what let a later run upload a second
+        # copy; it stays inflight and the next run looks before retrying.
+        entry = Manifest.load(mpath).get("A/Part.f3d")
+        assert entry is not None and entry.state == INFLIGHT
 
     def test_no_blocking_wait_on_the_future(self):
         """Regression guard for the actual bug: sync must not call the
@@ -938,3 +942,134 @@ class TestDrift:
 
         assert plan.missing == []
         assert plan.is_empty
+
+
+class TestSettleNeverDropsAFiredUpload:
+    """begin_upload has been called, so the file may already be in the cloud.
+    The manifest entry is the only thing stopping a second copy; nothing in
+    settle may remove it. reconcile_inflight settles it next run by looking."""
+
+    class Ambiguous(FakeDataPanel):
+        def poll_upload(self, handle):
+            return None                      # future never resolves
+
+    def test_unresolvable_upload_does_not_duplicate_next_run(self, src, tmp_path):
+        tree = {"A/Part.f3d": "sha1"}
+        panel = self.Ambiguous()
+        folder = panel.ensure_folder(("A",))
+        stranger = panel.upload(folder, "/tmp/x", "Part")   # a stranger sits there
+        mpath = str(tmp_path / "m.json")
+
+        before = panel.total_files
+        for _ in range(3):
+            S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                   dry_run=False, settle_wait=1.2)
+
+        assert panel.total_files == before + 1, (
+            "one upload total across three runs; the entry must survive")
+        # And it is ours, not the stranger's, even though the future never
+        # resolved - the pre-existing lineage is what rules the stranger out.
+        entry = Manifest.load(mpath).get("A/Part.f3d")
+        assert entry.lineage not in {f.lineage
+                                     for f in panel.list_folder(folder)
+                                     if f.lineage == stranger.lineage}
+
+    def test_upload_error_leaves_the_entry_inflight(self, src, tmp_path):
+        class Erroring(FakeDataPanel):
+            """Fires, nothing appears in the folder, and the future errors -
+            so neither the scan nor the future can settle it."""
+            def begin_upload(self, folder_id, local_path, name):
+                return {"placed": None, "polls": 0}
+            def poll_upload(self, handle):
+                raise UploadFailed("uploadState raised: RuntimeError")
+
+        tree = {"A/Part.f3d": "sha1"}
+        panel, mpath = Erroring(), str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False,
+               settle_wait=1.2)
+        entry = Manifest.load(mpath).get("A/Part.f3d")
+        assert entry is not None and entry.state == INFLIGHT
+
+
+    def test_ambiguous_unresolved_upload_is_not_dropped(self, src, tmp_path):
+        """Two same-named files appear that were BOTH absent when we started,
+        and the future never says which is ours. Dropping the entry here is
+        what let the next run add a third."""
+        class DoubleLanding(FakeDataPanel):
+            def begin_upload(self, folder_id, local_path, name):
+                a = FakeDataPanel.upload(self, folder_id, local_path, name)
+                FakeDataPanel.upload(self, folder_id, local_path, name)
+                return {"placed": a, "polls": 0}
+            def poll_upload(self, handle):
+                return None                    # never identifies itself
+
+        tree = {"A/Part.f3d": "sha1"}
+        panel, mpath = DoubleLanding(), str(tmp_path / "m.json")
+
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False,
+               settle_wait=1.2)
+        after_first = panel.total_files
+        entry = Manifest.load(mpath).get("A/Part.f3d")
+        assert entry is not None and entry.state == INFLIGHT, (
+            "a fired upload must stay recorded even when unresolvable")
+
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False,
+               settle_wait=1.2)
+        assert panel.total_files == after_first, "re-uploaded an unresolved path"
+
+class TestSettleClaimsOnlyItsOwnUploads:
+    def test_a_file_that_was_already_there_is_never_claimed(self, src, tmp_path):
+        """One name hit is not proof of ownership. Identity is the lineage."""
+        class LateArrival(FakeDataPanel):
+            def begin_upload(self, folder, local_path, name):
+                return {"f": folder, "p": local_path, "n": name, "done": False}
+            def poll_upload(self, h):
+                if not h["done"]:
+                    h["done"] = True
+                    h["placed"] = FakeDataPanel.upload(self, h["f"], h["p"], h["n"])
+                return h["placed"]
+
+        tree = {"A/Part.f3d": "sha1"}
+        panel = LateArrival()
+        folder = panel.ensure_folder(("A",))
+        stranger = panel.upload(folder, "/tmp/x", "Part")
+        mpath = str(tmp_path / "m.json")
+
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False,
+               settle_wait=3.0)
+
+        entry = Manifest.load(mpath).get("A/Part.f3d")
+        assert entry.lineage != stranger.lineage, "recorded someone else's file"
+
+
+class TestReconciledBlobIsReal:
+    def test_a_recovered_file_is_not_changed_forever(self, src, tmp_path):
+        """blob="" is neither None nor any real SHA, so diff() called it
+        'changed upstream' on every sync from then on."""
+        tree = {"A/Part.f3d": "sha1"}
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+        folder = panel.ensure_folder(("A",))
+        panel.upload(folder, "/tmp/x", "Part")
+        m = Manifest("s", src.repo)
+        m.mark_inflight("A/Part.f3d", placed_name="Part")
+        m.save(mpath)
+
+        for _ in range(2):
+            plan, _rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                                dry_run=False)
+            assert plan.change == []
+        assert Manifest.load(mpath).get("A/Part.f3d").blob == "sha1"
+
+
+class TestBlockedRunDoesNotClaimToHaveChecked:
+    def test_a_collision_blocks_the_stamp(self, src, tmp_path):
+        collide = {"A/Part.f3d": "s1", "A/Part.step": "s2"}   # one panel name
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(collide),
+                            ("**/*",), dry_run=False)
+
+        assert rep.collisions and panel.total_files == 0
+        m = Manifest.load(mpath)
+        assert m is None or m.synced_commit is None, (
+            "a run that placed nothing must not record a successful check")

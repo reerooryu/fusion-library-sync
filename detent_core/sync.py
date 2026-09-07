@@ -62,10 +62,16 @@ class Report:
                 for label, items, note in rows if items or label == "added"]
 
 
-def reconcile_inflight(manifest: Manifest, panel: DataPanel,
-                       report: Report) -> None:
+def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
+                       selected: Optional[Dict[str, str]] = None) -> None:
     """Resolve uploads interrupted by a crash by looking in the cloud, not the
-    manifest. One match landed; none is safe to retry; more needs a human."""
+    manifest. One match landed; none is safe to retry; more needs a human.
+
+    `selected` supplies the blob for a file that landed. Without it the entry
+    was recorded with blob="" - not None, so never 'unverified', and never
+    equal to any real SHA - which reported the file as changed upstream on
+    every single sync from then on.
+    """
     for repo_path, entry in list(manifest.in_state(INFLIGHT).items()):
         try:
             pp = P.map_path(repo_path)
@@ -76,7 +82,8 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel,
         hits = panel.find_by_name(folder, entry.placed_name or pp.name)
 
         if len(hits) == 1:
-            manifest.record(repo_path, entry.blob or "", hits[0].lineage,
+            blob = entry.blob or (selected or {}).get(repo_path)
+            manifest.record(repo_path, blob, hits[0].lineage,
                             hits[0].version, state=PLACED,
                             placed_name=entry.placed_name)
             report.reconciled.append((repo_path, "landed"))
@@ -90,7 +97,7 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel,
 
 
 def detect_drift(manifest: Manifest, panel: DataPanel
-                 ) -> Tuple[Set[str], Dict[str, str]]:
+                 ) -> Tuple[Set[str], Dict[str, str], Set[str]]:
     """Find manifest entries the Data Panel no longer backs up.
 
     Returns (missing, occupied):
@@ -98,6 +105,9 @@ def detect_drift(manifest: Manifest, panel: DataPanel
                  re-place.
       occupied - the lineage is gone but something else now sits under that
                  name. NOT safe to re-place, and a human has to look.
+      present  - every lineage in the subtree right now. settle uses it to
+                 tell our own uploads from files that were already there,
+                 which saves a second walk of the same folders.
 
     Without this a deleted folder leaves Detent reporting 'up to date' over an
     empty shelf, which is the worst thing a sync tool can be confidently wrong
@@ -121,7 +131,7 @@ def detect_drift(manifest: Manifest, panel: DataPanel
     try:
         scan = panel.scan()
     except Exception:                                  # noqa: BLE001
-        return set(), {}
+        return set(), {}, set()
 
     present = {f.lineage for files in scan.values() for f in files}
     names = {folders: {f.name for f in files} for folders, files in scan.items()}
@@ -142,13 +152,14 @@ def detect_drift(manifest: Manifest, panel: DataPanel
             occupied[path] = want
         else:
             missing.add(path)
-    return missing, occupied
+    return missing, occupied, present
 
 
 def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
            report: Report, manifest_path: str, handles: Dict[str, object],
            on_progress: Optional[Progress], max_wait: float,
-           mapped_by_path: Optional[Dict[str, object]] = None) -> None:
+           mapped_by_path: Optional[Dict[str, object]] = None,
+           pre_existing: Optional[Set[str]] = None) -> None:
     """Resolve fired uploads into recorded lineages.
 
     Measured 6 Sep 2026: a fired file appears in folder.dataFiles immediately
@@ -158,7 +169,19 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
 
     So: scan the folder first, which is instant. Fall back to polling the
     future only for anything the scan does not find.
+
+    `pre_existing` is the set of lineages present BEFORE this run fired
+    anything. A name hit that was already there is somebody else's file, and
+    claiming its lineage would leave the manifest owning a file we never
+    created - while ours sits beside it unrecorded.
+
+    Nothing here drops a manifest entry. Every path in this function has
+    already called begin_upload, so the file may well be in the cloud; the
+    entry stays inflight and reconcile_inflight settles it next run by
+    looking. Dropping it removes the only guard against re-uploading, which
+    is how a folder ends up with three files of one name.
     """
+    pre_existing = pre_existing or set()
     pending = dict(handles)
     deadline = time.time() + max_wait
     total = len(pending)
@@ -191,7 +214,9 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                 continue
 
             for repo_path, name in wanted:
-                hits = present.get(name, [])
+                # Only files that were not already there can be ours.
+                hits = [h for h in present.get(name, [])
+                        if h.lineage not in pre_existing]
                 if len(hits) == 1:
                     manifest.record(repo_path, selected.get(repo_path, ""),
                                     hits[0].lineage, hits[0].version, state=PLACED)
@@ -203,8 +228,8 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                     try:
                         placed = panel.poll_upload(pending[repo_path])
                     except UploadFailed as exc:
+                        # Left inflight on purpose: it may still have landed.
                         report.failures.append((repo_path, str(exc)))
-                        manifest.drop(repo_path)
                         pending.pop(repo_path, None)
                         continue
                     if placed is not None:
@@ -215,8 +240,8 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                     elif time.time() >= deadline - 1:
                         report.failures.append(
                             (repo_path,
-                             f"{len(hits)} files named {name!r}, upload did not identify itself"))
-                        manifest.drop(repo_path)
+                             f"{len(hits)} files named {name!r}, upload did not "
+                             "identify itself - left for the next run to reconcile"))
                         pending.pop(repo_path, None)
 
         # --- fallback: ask the future about whatever the scan missed
@@ -224,8 +249,8 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
             try:
                 placed = panel.poll_upload(handle)
             except UploadFailed as exc:
+                # Left inflight on purpose: it may still have landed.
                 report.failures.append((repo_path, str(exc)))
-                manifest.drop(repo_path)
                 pending.pop(repo_path, None)
                 continue
             if placed is not None:
@@ -256,8 +281,14 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                on_progress: Optional[Progress] = None,
                dry_run: bool = False,
                threshold: int = gh.TARBALL_THRESHOLD,
-               settle_wait: float = 300.0) -> Report:
-    """Additive half of a plan. Writes nothing when dry_run."""
+               settle_wait: float = 300.0,
+               known_lineages: Optional[Set[str]] = None) -> Report:
+    """Additive half of a plan. Writes nothing when dry_run.
+
+    known_lineages: every lineage already in the target subtree, from the
+    drift scan sync() has just done. Passed on to settle so it can tell our
+    uploads from files that were there first. None means take a listing here.
+    """
     report = Report(
         skipped_changed=list(plan.change),
         skipped_orphan=list(plan.orphan),
@@ -301,6 +332,20 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         )
         report.failures.extend(fetch_failures)
 
+        # Everything already in the target folders, before we add to them.
+        # settle uses this to tell our uploads from files that were there
+        # first; without it a single name hit is claimed on sight.
+        pre_existing: Set[str] = set(known_lineages or ())
+        if known_lineages is None:
+            for folders in {pp.folders for pp in mapped}:
+                try:
+                    for f in panel.list_folder(panel.ensure_folder(folders)):
+                        pre_existing.add(f.lineage)
+                except Exception:                     # noqa: BLE001
+                    # Unreadable folder: we cannot prove ownership there, so
+                    # settle falls back to the future - slower and correct.
+                    pass
+
         total = len(mapped)
         handles: Dict[str, object] = {}
         for i, pp in enumerate(mapped, 1):
@@ -335,7 +380,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         if handles:
             settle(manifest, panel, selected, report, manifest_path,
                    handles, on_progress, settle_wait,
-                   mapped_by_path={pp.repo_path: pp for pp in mapped})
+                   mapped_by_path={pp.repo_path: pp for pp in mapped},
+                   pre_existing=pre_existing)
 
         report.replaced = [p for p in report.added if p in replace]
 
@@ -371,25 +417,32 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     manifest = Manifest.load(manifest_path) or Manifest(
         source_id=src.repo.replace("/", "_"), repo=src.repo, ref=src.ref)
 
+    selected = PL.select(tree, include, exclude)
+
     pre = Report()
     if not dry_run:
-        reconcile_inflight(manifest, panel, pre)
+        reconcile_inflight(manifest, panel, pre, selected)
         manifest.save(manifest_path)
 
-    selected = PL.select(tree, include, exclude)
-    gone, occupied = detect_drift(manifest, panel) if verify_placed else (set(), {})
+    gone, occupied, present = (detect_drift(manifest, panel) if verify_placed
+                               else (set(), {}, None))
     plan = PL.diff(selected, manifest, missing=gone)
     plan.conflict = sorted(occupied)
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
                         transport, commit, on_progress=on_progress,
                         dry_run=dry_run, threshold=threshold,
-                        settle_wait=settle_wait)
+                        settle_wait=settle_wait, known_lineages=present)
 
     # Stamp last, and here rather than inside apply_plan, which returns early
     # on every path that has nothing to upload. A run that finds nothing still
     # checked, and the manifest is the only place that fact can live.
     # Cancellation raises out of apply_plan, so an aborted run never stamps.
-    if not dry_run:
+    # A run blocked before it wrote anything has not reconciled this ref with
+    # anything, so it must not leave a header saying it did. Upload failures
+    # are different: the tree WAS compared, and the per-file entries record
+    # what actually landed.
+    blocked = bool(report.collisions or report.unmappable)
+    if not dry_run and not blocked:
         manifest.stamp(src.ref, commit)
         manifest.save(manifest_path)
 

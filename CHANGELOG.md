@@ -2,7 +2,7 @@
 
 Detent syncs a Git-hosted CAD library into Fusion 360's Data Panel.
 
-**Only v0.3.1 is fit to use.** Every earlier release is left published for the
+**Only v0.3.2 is fit to use.** Every earlier release is left published for the
 record and marked broken. Two defects affect all of them regardless of what
 else they fixed:
 
@@ -25,9 +25,43 @@ folder, each on its own lineage, with no warning and no suffix.
 
 ---
 
-## v0.3.1 — Updates that actually take effect
+## v0.3.2 — Uploads that cannot be duplicated by a failed settle
 
 **The current release.**
+
+An audit found four defects, each reproduced before it was fixed and each
+mutation-checked after. Two of them could duplicate files.
+
+- `settle()` dropped the manifest entry on three paths that run *after*
+  `begin_upload` has handed the file to Fusion. The file may already be in the
+  cloud; dropping the entry removes the only guard, so the next run treated
+  the path as new and sent it again — a folder holding three files named
+  `Part` after two syncs. The entry now stays `inflight` and
+  `reconcile_inflight` settles it by looking. Only an upload that provably
+  never started is dropped.
+- `settle()`'s fast path claimed a lineage on a single name match, which the
+  branch beside it explicitly refuses to do and which the manifest's own rule
+  forbids: identity is the lineage, never the display name. A file already in
+  the folder was recorded as ours while our upload sat beside it unrecorded.
+  The drift scan's lineages are now passed down so `settle` knows what was
+  there first — no extra listings.
+- `reconcile_inflight` recorded `blob=""` — never `None`, so never
+  "unverified", and never equal to a real SHA. Every file recovered from a
+  crash reported as changed upstream on every sync from then on.
+- A run blocked by a collision or an unmappable path uploaded nothing and then
+  stamped the manifest header anyway, claiming a check it had not made.
+
+`subpath` is now rejected in config. `paths.map_path` takes one and
+`adopt_existing` passes it, but `apply_plan`, `settle`, `reconcile_inflight`
+and `detect_drift` do not — so setting it made sync mirror the prefix into the
+Data Panel while adopt looked for it stripped, matched nothing, wrote an empty
+manifest, and duplicated the entire library on the next sync.
+
+109 tests.
+
+## v0.3.1 — Updates that actually take effect
+
+**Broken.** Two settle paths can duplicate a file.
 
 `AttributeError: 'SourceConfig' object has no attribute 'verify_placed'` — on
 a field sitting plainly in the installed file. The package on disk was right;
