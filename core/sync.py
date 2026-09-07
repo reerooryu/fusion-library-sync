@@ -268,7 +268,6 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                    handles, on_progress, settle_wait,
                    mapped_by_path={pp.repo_path: pp for pp in mapped})
 
-        manifest.synced_commit = commit
         manifest.save(manifest_path)
     finally:
         if own_workdir:
@@ -305,6 +304,15 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
                         transport, commit, on_progress=on_progress,
                         dry_run=dry_run, threshold=threshold,
                         settle_wait=settle_wait)
+
+    # Stamp last, and here rather than inside apply_plan, which returns early
+    # on every path that has nothing to upload. A run that finds nothing still
+    # checked, and the manifest is the only place that fact can live.
+    # Cancellation raises out of apply_plan, so an aborted run never stamps.
+    if not dry_run:
+        manifest.stamp(src.ref, commit)
+        manifest.save(manifest_path)
+
     report.reconciled = pre.reconciled + report.reconciled
     report.failures = pre.failures + report.failures
     return plan, report

@@ -440,6 +440,95 @@ class TestCancel:
         assert panel.total_files == 0
         assert panel.duplicates() == {}
 
+    def test_cancel_does_not_stamp_the_manifest(self, small_tree, src, tmp_path):
+        """An aborted run has not checked anything. Saying it has would make
+        the next run trust a tree it never finished reading."""
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        head, rest = dict(list(small_tree.items())[:3]), dict(small_tree)
+
+        settled = FakeTransport(head)
+        settled.commit = "commit_AAA"
+        S.sync(src, mpath, panel, settled, F3D, dry_run=False)
+        was = Manifest.load(mpath).synced_at
+        assert was
+
+        # More files upstream now, and the download is interrupted part way.
+        aborted = self.CancellingTransport(rest)
+        aborted.commit = "commit_BBB"
+        with pytest.raises(gh.Cancelled):
+            S.sync(src, mpath, panel, aborted, F3D, dry_run=False, threshold=1)
+
+        m = Manifest.load(mpath)
+        assert m.synced_at == was
+        assert m.synced_commit == "commit_AAA"
+
+
+class TestManifestHeader:
+    """The header answers 'when did this last run, against what'. Every field
+    in it was stale in some way: synced_at was never assigned at all, ref was
+    frozen at creation, and synced_commit only moved when a file happened to
+    be uploaded."""
+
+    def test_a_sync_records_when_it_ran(self, small_tree, src, tmp_path):
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, FakeDataPanel(), FakeTransport(small_tree), F3D,
+               dry_run=False)
+        assert Manifest.load(mpath).synced_at
+
+    def test_a_run_with_nothing_to_add_still_records_the_check(
+            self, small_tree, src, tmp_path):
+        """The steady state. If only uploads stamp the manifest, a library that
+        is up to date looks like one that was never checked."""
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+
+        first = FakeTransport(small_tree)
+        first.commit = "commit_AAA"
+        S.sync(src, mpath, panel, first, F3D, dry_run=False)
+
+        moved = FakeTransport(small_tree)          # repo advanced, same files
+        moved.commit = "commit_BBB"
+        plan, _ = S.sync(src, mpath, panel, moved, F3D, dry_run=False)
+
+        assert plan.add == []
+        m = Manifest.load(mpath)
+        assert m.synced_commit == "commit_BBB"
+
+    def test_ref_follows_the_config(self, small_tree, tmp_path):
+        """Editing ref in config.json must not leave the manifest lying about
+        which release it tracks."""
+        repo = "VEX-CAD/VEX-CAD-Fusion-360-Library"
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+
+        S.sync(gh.Source(repo, "v2.0.3"), mpath, panel,
+               FakeTransport(small_tree), F3D, dry_run=False)
+        assert Manifest.load(mpath).ref == "v2.0.3"
+
+        S.sync(gh.Source(repo, "v2.0.5"), mpath, panel,
+               FakeTransport(small_tree), F3D, dry_run=False)
+        assert Manifest.load(mpath).ref == "v2.0.5"
+
+    def test_preview_never_stamps(self, small_tree, src, tmp_path):
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, FakeDataPanel(), FakeTransport(small_tree), F3D,
+               dry_run=True)
+        m = Manifest.load(mpath)
+        assert m is None or m.synced_at is None
+
+    def test_stamping_does_not_disturb_the_entries(self, small_tree, src,
+                                                   tmp_path):
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        before = {p: e.blob for p, e in Manifest.load(mpath).files.items()}
+
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+
+        assert {p: e.blob for p, e in Manifest.load(mpath).files.items()} == before
+        assert panel.duplicates() == {}
+
 
 class TestAsyncUpload:
     """Fusion completes uploads on the event loop, so a fired upload lands in

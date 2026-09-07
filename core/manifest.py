@@ -72,6 +72,21 @@ class Manifest:
     def drop(self, repo_path: str) -> None:
         self.files.pop(repo_path, None)
 
+    def stamp(self, ref: str, commit: Optional[str]) -> None:
+        """Record which ref and commit this manifest was last reconciled
+        against, and when.
+
+        The header used to go stale three separate ways: synced_at was never
+        assigned at all, ref was fixed at creation so editing config.json left
+        it lying, and synced_commit only moved when a file happened to be
+        uploaded - so the steady state (nothing to add) never recorded that a
+        check had run. Stamping is the whole point of a check that finds
+        nothing.
+        """
+        self.ref = ref
+        self.synced_commit = commit
+        self.synced_at = _now()
+
     # ---- persistence ---------------------------------------------------
     def to_dict(self) -> dict:
         return {

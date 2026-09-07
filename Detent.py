@@ -219,7 +219,8 @@ def _pick_project(name, log):
 
 
 def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
-    """Always plan first. Writing requires a second, explicit yes."""
+    """Always plan first. Uploading requires a second, explicit yes; a sync
+    that finds nothing still runs, so the manifest records the check."""
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = False
     progress.show("Detent", "Reading %v...", 0, 1)
@@ -230,33 +231,28 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     finally:
         progress.hide()
 
-    if plan.is_empty:
-        ui.messageBox("Everything is up to date.", "Detent")
-        return
-
-    summary = _plan_text(plan, source)
+    summary = _plan_text(plan, source) if not plan.is_empty else "Everything is up to date."
     if not write:
         ui.messageBox(summary, "Detent - preview")
         return
 
-    if not plan.add:
-        ui.messageBox(summary + "\n\nNothing to add. Changed and removed files "
-                                "need Phase 2.", "Detent")
-        return
-
-    n = len(plan.add)
-    est = gh.estimate(n)
-    warn = ""
-    if n >= gh.TARBALL_THRESHOLD:
-        warn = ("\n\nThis is a full first sync. It downloads the whole "
-                "repository in one go and Fusion will be UNRESPONSIVE for "
-                "most of it.\n\nConsider narrowing 'include' in config.json "
-                "and syncing a subset first.")
-    answer = ui.messageBox(
-        f"{summary}\n\nUpload {est}?{warn}",
-        "Detent", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
-    if answer != adsk.core.DialogResults.DialogYes:
-        return
+    # Anything to upload needs an explicit yes. A run with nothing to upload
+    # still goes through the write path below: it reconciles interrupted
+    # uploads and records that this check happened, which is exactly the case
+    # the manifest header used to miss.
+    if plan.add:
+        n = len(plan.add)
+        warn = ""
+        if n >= gh.TARBALL_THRESHOLD:
+            warn = ("\n\nThis is a full first sync. It downloads the whole "
+                    "repository in one go and Fusion will be UNRESPONSIVE for "
+                    "most of it.\n\nConsider narrowing 'include' in config.json "
+                    "and syncing a subset first.")
+        answer = ui.messageBox(
+            f"{summary}\n\nUpload {gh.estimate(n)}?{warn}",
+            "Detent", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
+        if answer != adsk.core.DialogResults.DialogYes:
+            return
 
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = True
