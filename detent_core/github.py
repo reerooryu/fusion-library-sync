@@ -265,8 +265,11 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 return None
             if total:
                 i = len(paths) * got // total
-                label = (f"Downloading {human_bytes(got)} of "
-                         f"{human_bytes(total)}  ({got * 100 // total}%)")
+                # No percent sign: Detent.py escapes "%" to "%%" so a path
+                # cannot corrupt Fusion's %v/%m/%p format tokens, and the
+                # escape would show through here.
+                label = (f"Downloading {human_bytes(got)} "
+                         f"of {human_bytes(total)}")
             else:
                 i, label = 0, f"Downloading {human_bytes(got)}"
             return on_progress(i, len(paths), label)

@@ -281,7 +281,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                on_progress: Optional[Progress] = None,
                dry_run: bool = False,
                threshold: int = gh.TARBALL_THRESHOLD,
-               settle_wait: float = 300.0,
+               settle_wait: Optional[float] = None,
                known_lineages: Optional[Set[str]] = None) -> Report:
     """Additive half of a plan. Writes nothing when dry_run.
 
@@ -376,8 +376,15 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                 continue
 
         if handles:
+            # One second per fired upload, floor 300. A flat 300 was fine for
+            # 45 files and left the tail of a 1,198-file batch unresolved:
+            # every upload is fired at once, so the last one to be processed
+            # waits behind all the others in Fusion's own queue. The loop polls
+            # and yields once a second, so a longer deadline costs nothing when
+            # everything settles early.
+            wait = settle_wait if settle_wait is not None else max(300.0, float(len(handles)))
             settle(manifest, panel, selected, report, manifest_path,
-                   handles, on_progress, settle_wait,
+                   handles, on_progress, wait,
                    mapped_by_path={pp.repo_path: pp for pp in mapped},
                    pre_existing=pre_existing)
 
@@ -398,7 +405,7 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          dry_run: bool = True,
          on_progress: Optional[Progress] = None,
          threshold: int = gh.TARBALL_THRESHOLD,
-         settle_wait: float = 300.0,
+         settle_wait: Optional[float] = None,
          verify_placed: bool = True) -> Tuple[PL.Plan, Report]:
     """One full cycle. Defaults to dry_run.
 
