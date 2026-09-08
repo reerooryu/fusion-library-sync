@@ -2,7 +2,7 @@
 
 Incremental sync of a Git-hosted CAD library into Autodesk Fusion's Data Panel.
 
-## Install
+## Detent Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/reerooryu/fusion-library-sync/main/install.sh | bash
@@ -16,6 +16,20 @@ and `state/` alone, so the same command upgrades an existing install.
 3. Select Detent, Run.
 
 Downloads only what changed.
+
+## Folder Install
+
+1. Install [GitHubToFusion360](https://apps.autodesk.com/FUSION/en/Detail/Index?id=789800822168335025) from the Autodesk App Store once
+2. Run it, paste this repo's URL once
+3. Fusion → **Utilities → ADD-INS → Sync Library**
+
+Fusion finds an add-in by looking for `<folder>.py` inside the add-in folder,
+so the entry points here are `Detent.py` and `Detent.manifest`. If your
+installer drops the repo into a folder with a different name, rename that
+folder to `Detent`.
+
+VEX-CAD is preconfigured, so there is no second URL to paste. Add your own
+libraries by editing `config.json` beside the add-in.
 
 **Status:** v0.3.3 — Fusion add-in, additive sync only. 109 tests.
 
@@ -59,20 +73,6 @@ tests/             acceptance tests against the real corpus
 ```
 python3 -m pytest tests/ -q
 ```
-
-## Install
-
-1. Install **GitHubToFusion360** from the Autodesk App Store (once, ever)
-2. Run it, paste this repo's URL (once, ever)
-3. Fusion → **Utilities → ADD-INS → Sync Library**
-
-Fusion finds an add-in by looking for `<folder>.py` inside the add-in folder,
-so the entry points here are `Detent.py` and `Detent.manifest`. If your
-installer drops the repo into a folder with a different name, rename that
-folder to `Detent`.
-
-VEX-CAD is preconfigured, so there is no second URL to paste. Add your own
-libraries by editing `config.json` beside the add-in.
 
 ## Use
 
