@@ -10,6 +10,8 @@ import io
 import json
 import os
 import tarfile
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -20,6 +22,13 @@ CODELOAD = "https://codeload.github.com"
 # Above this many files, one tarball beats N requests. Tune with real timings.
 TARBALL_THRESHOLD = 100
 
+# GitHub builds a codeload archive on demand; for a 2.2 GB repository that
+# routinely times out at the edge. These are the statuses worth trying again -
+# a 404 or a 403 will never change.
+RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+RETRIES = 4
+BACKOFF = 2.0          # seconds, doubling
+
 
 class Transport(Protocol):
     def get_json(self, url: str) -> Tuple[dict, Dict[str, str]]: ...
@@ -29,9 +38,13 @@ class Transport(Protocol):
 class UrllibTransport:
     """Default transport. No third-party dependencies - Fusion ships plain CPython."""
 
-    def __init__(self, token: Optional[str] = None, timeout: int = 60):
+    def __init__(self, token: Optional[str] = None, timeout: int = 60,
+                 retries: int = RETRIES, sleep=time.sleep):
         self.token = token
         self.timeout = timeout
+        self.retries = retries
+        self._sleep = sleep          # injected so tests do not actually wait
+        self.attempts = 0            # observable: how many requests were made
 
     def _req(self, url: str) -> urllib.request.Request:
         headers = {"User-Agent": "detent", "Accept": "application/vnd.github+json"}
@@ -39,14 +52,38 @@ class UrllibTransport:
             headers["Authorization"] = f"Bearer {self.token}"
         return urllib.request.Request(url, headers=headers)
 
+    def _open(self, url):
+        """urlopen, retried on the failures that are worth retrying.
+
+        One 504 from codeload used to end a whole sync. Reported live on a
+        first full-library run, which is exactly when the archive is biggest
+        and the edge most likely to give up.
+        """
+        last = None
+        for attempt in range(self.retries + 1):
+            self.attempts += 1
+            try:
+                return urllib.request.urlopen(self._req(url), timeout=self.timeout)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in RETRY_STATUS:
+                    raise
+                last = exc
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                # Connection reset, DNS blip, read timeout. Same treatment.
+                last = exc
+            if attempt < self.retries:
+                self._sleep(BACKOFF * (2 ** attempt))
+        raise GitHubError(
+            f"{url}\ngave up after {self.retries + 1} attempts: {last}")
+
     def get_json(self, url):
-        with urllib.request.urlopen(self._req(url), timeout=self.timeout) as r:
+        with self._open(url) as r:
             return json.loads(r.read().decode("utf-8")), dict(r.headers)
 
     def get_bytes(self, url, on_chunk=None):
         """on_chunk(received, total) is called as data arrives, so a caller on
         a UI thread can pump events and stay cancellable."""
-        with urllib.request.urlopen(self._req(url), timeout=self.timeout) as r:
+        with self._open(url) as r:
             if on_chunk is None:
                 return r.read()
             total = int(r.headers.get("Content-Length") or 0)
@@ -224,14 +261,27 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 pct = f"{got * 100 // total}%" if total else human_bytes(got)
                 return on_progress(0, len(paths), f"downloading {pct}")
             return None
-        data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
-        fetched = extract_tarball(data, dest, wanted=paths)
-        for p in paths:
-            if p not in fetched:
-                failures.append((p, "not present in tarball"))
-        if on_progress:
-            on_progress(len(fetched), len(paths), "tarball")
-        return fetched, failures
+        try:
+            data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
+        except Cancelled:
+            raise
+        except Exception as exc:                     # noqa: BLE001
+            # GitHub builds the archive on demand and the big ones time out at
+            # the edge; one 504 used to end the run. Individual files come from
+            # a different host, are small, and are not rate limited - much
+            # slower, but it finishes.
+            if on_progress:
+                on_progress(0, len(paths),
+                            f"archive failed ({type(exc).__name__}), "
+                            "fetching files individually")
+        else:
+            fetched = extract_tarball(data, dest, wanted=paths)
+            for p in paths:
+                if p not in fetched:
+                    failures.append((p, "not present in tarball"))
+            if on_progress:
+                on_progress(len(fetched), len(paths), "tarball")
+            return fetched, failures
 
     for i, p in enumerate(paths, 1):
         try:
