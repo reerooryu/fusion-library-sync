@@ -11,7 +11,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:

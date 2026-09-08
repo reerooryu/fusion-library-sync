@@ -2,7 +2,7 @@
 
 Detent syncs a Git-hosted CAD library into Fusion 360's Data Panel.
 
-**Only v0.3.5 is fit to use.** Every earlier release is left published for the
+**Only v0.3.6 is fit to use.** Every earlier release is left published for the
 record and marked broken. Two defects affect all of them regardless of what
 else they fixed:
 
@@ -25,9 +25,27 @@ folder, each on its own lineage, with no warning and no suffix.
 
 ---
 
-## v0.3.5 — A download that shows it is moving
+## v0.3.6 — A settle deadline that fits the batch
 
 **The current release.**
+
+A full 1,198-file sync placed 1,197 and reported one failure: *upload
+unresolved after 300s*. Every upload is fired at once, so the last file to be
+processed waits behind all the others in Fusion's own queue, and a flat
+300-second deadline that suited 45 files does not suit 1,198.
+
+The deadline is now one second per fired upload, floored at 300. The settle
+loop polls and yields once a second, so a longer deadline costs nothing when
+everything resolves early.
+
+Nothing was lost in the reported run: a fired upload is never dropped from the
+manifest, so the unresolved file stayed `inflight` and the next sync
+reconciled it by looking in the folder — recording it if it landed, retrying
+it once if it did not.
+
+120 tests.
+
+## v0.3.5 — A download that shows it is moving
 
 A first sync sat on `Downloading 0/1198` with an empty bar for the whole 2.2 GB
 archive. The percentage was being computed correctly and then thrown away:

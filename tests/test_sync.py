@@ -1210,7 +1210,8 @@ class TestDownloadProgress:
 
         during = [s for s in seen if "of" in s[2]]
         assert during, f"no byte-level progress reported: {seen}"
-        assert "%" in during[0][2] and "B" in during[0][2], during[0][2]
+        assert " of " in during[0][2] and "B" in during[0][2], during[0][2]
+        assert "%" not in during[0][2], "a % would show through Fusion's escape"
         # the bar must actually move, not sit at zero for the whole download
         indexes = [i for i, _n, _l in during]
         assert indexes[0] < indexes[-1], f"progress index never advanced: {indexes}"
@@ -1249,7 +1250,7 @@ class TestDownloadProgress:
         S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(), Chunked(tree),
                F3D, dry_run=False, threshold=1, on_progress=progress)
 
-        byte_labels = [l for _i, l in seen if "of" in l and "%" in l]
+        byte_labels = [l for _i, l in seen if " of " in l and "B" in l]
         assert byte_labels, f"no byte progress reached the caller: {seen[:6]}"
 
     def test_per_file_progress_counts_files(self, src, tmp_path):
@@ -1261,3 +1262,51 @@ class TestDownloadProgress:
                        threshold=999)          # force the per-file path
         assert [i for i, _n, _l in seen] == [1, 2, 3, 4]
         assert seen[-1][2] == "Downloading 4/4"
+
+
+class TestSettleDeadlineScales:
+    """A flat 300s left the tail of a 1,198-file batch unresolved: everything
+    is fired at once, so the last file waits behind all the others."""
+
+    def test_deadline_grows_with_the_batch(self, src, tmp_path, monkeypatch):
+        seen = {}
+        real_settle = S.settle
+
+        def spy(manifest, panel, selected, report, mpath, handles,
+                on_progress, max_wait, **kw):
+            seen["wait"] = max_wait
+            seen["n"] = len(handles)
+            return real_settle(manifest, panel, selected, report, mpath,
+                               handles, on_progress, max_wait, **kw)
+
+        monkeypatch.setattr(S, "settle", spy)
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(400)}
+        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
+               FakeTransport(tree), F3D, dry_run=False, threshold=99999)
+        assert seen["n"] == 400
+        assert seen["wait"] >= 400, f"deadline did not scale: {seen}"
+
+    def test_small_batches_keep_the_floor(self, small_tree, src, tmp_path,
+                                          monkeypatch):
+        seen = {}
+        real_settle = S.settle
+
+        def spy(*a, **kw):
+            seen["wait"] = a[7]
+            return real_settle(*a, **kw)
+
+        monkeypatch.setattr(S, "settle", spy)
+        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
+               FakeTransport(small_tree), F3D, dry_run=False)
+        assert seen["wait"] == 300.0
+
+    def test_an_explicit_wait_still_wins(self, small_tree, src, tmp_path,
+                                        monkeypatch):
+        seen = {}
+        real_settle = S.settle
+        monkeypatch.setattr(S, "settle",
+                            lambda *a, **kw: (seen.setdefault("wait", a[7]),
+                                              real_settle(*a, **kw))[1])
+        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
+               FakeTransport(small_tree), F3D, dry_run=False, settle_wait=7.0)
+        assert seen["wait"] == 7.0

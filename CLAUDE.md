@@ -70,6 +70,8 @@ One line per commit, oldest first.
   504 on the first JSON request killed a whole sync.
 - `fix(ui): let fetch_files own its download progress label` — the byte
   percentage was computed and then overwritten with a frozen file counter.
+- `fix(sync): scale the settle deadline with the batch size` — a flat 300s
+  left the tail of a 1,198-file sync unresolved.
 
 ## Push
 
