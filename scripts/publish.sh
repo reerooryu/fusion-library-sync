@@ -16,6 +16,7 @@ cd "$(dirname "$0")/.."
 
 DRY=1
 RETAG=0
+PRINT=0
 for a in "$@"; do
   case "$a" in
     --go) DRY=0 ;;
@@ -23,6 +24,8 @@ for a in "$@"; do
     # commits - which is also what keeps GitHub from ever collecting them.
     # --retag moves them onto the rewritten history and force-pushes.
     --retag) RETAG=1 ;;
+    # Dump every release body to stdout and stop. Nothing is tagged or pushed.
+    --print-notes) PRINT=1 ;;
     *) echo "unknown option: $a"; exit 1 ;;
   esac
 done
@@ -48,7 +51,8 @@ v0.2.2	fix(ui): populate renamed report and bind folder input to source	yes
 v0.2.3	fix(manifest): stamp ref, commit and timestamp on every sync	yes
 v0.3.0	feat(sync): detect manifest entries missing from the Data Panel	yes
 v0.3.1	docs: rename v0.1 to v0.1.0 and add --retag	yes
-v0.3.2	HEAD	no
+v0.3.2	docs: changelog for v0.3.2	yes
+v0.3.3	HEAD	no
 MAPEOF
 )
 
@@ -61,6 +65,42 @@ label() {  # $1 tag, $2 title, $3 prerelease
   else printf '%s — %s' "$1" "$2"; fi
 }
 run() { if [ "$DRY" = 1 ]; then say "  would: $*"; else "$@"; fi; }
+
+# GitHub's own "What's Changed" list, built from the commits in the range.
+# Generated rather than written down: it uses the repo's real SHAs, so it
+# survives every history rewrite without anyone editing a list by hand.
+slug() {
+  git remote get-url origin 2>/dev/null \
+    | sed -E 's#.*github\.com[:/]##; s#\.git$##' \
+    | grep . || echo "reerooryu/fusion-library-sync"
+}
+
+whats_changed() {  # $1 previous tag (may be empty), $2 this tag
+  local repo range
+  repo="$(slug)"
+  if [ -n "$1" ]; then range="$1..$2"; else range="$2"; fi
+  printf '\n## What'"'"'s Changed\n\n'
+  git log --reverse --no-merges "$range" \
+    --format="* %s by [@%an](https://github.com/%an) in [\`%h\`](https://github.com/$repo/commit/%H)"
+  if [ -n "$1" ]; then
+    printf '\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+      "$repo" "$1" "$2"
+  fi
+}
+
+# Build the installable add-in for a tag, from that tag's own tree. Every
+# release carries its own artifact so a tag is reproducible on its own; the
+# installer only ever fetches releases/latest/download, which resolves to the
+# newest NON-prerelease - so the broken ones are never what anyone installs.
+build_asset() {  # $1 tag, $2 outfile
+  local pkg=""
+  for cand in detent_core core; do
+    if git cat-file -e "$1:$cand" 2>/dev/null; then pkg="$cand"; break; fi
+  done
+  [ -n "$pkg" ] || return 1
+  git archive --format=tar.gz --prefix=Detent/ "$1" \
+      Detent.py Detent.manifest "$pkg" > "$2" 2>/dev/null
+}
 
 if ! command -v gh >/dev/null; then
   if [ "$DRY" = 0 ]; then
@@ -104,6 +144,21 @@ resolve() {
   fi
   printf '%s' "$hits"
 }
+
+if [ "$PRINT" = 1 ]; then
+  PREV=""
+  while IFS=$'\t' read -r tag commit pre; do
+    [ -z "$tag" ] && continue
+    sha=$(resolve "$commit") || continue
+    section "$tag"; title=$(cat "$WORK/title")
+    printf '\n\n%s\n%s\n\n' "=== $(label "$tag" "$title" "$pre")" \
+      "$(printf '=%.0s' $(seq 60))"
+    cat "$WORK/body"
+    whats_changed "$PREV" "$sha"
+    PREV="$tag"
+  done <<< "$MAP"
+  exit 0
+fi
 
 say "== tags"
 MISSING=0
@@ -150,14 +205,25 @@ fi
 
 say ""
 say "== releases"
-while IFS=$'\t' read -r tag _commit pre; do
+PREV=""
+while IFS=$'\t' read -r tag commit pre; do
   [ -z "$tag" ] && continue
+  sha=$(resolve "$commit") || continue
   section "$tag"; title=$(cat "$WORK/title"); text=$(label "$tag" "$title" "$pre")
+  whats_changed "$PREV" "$sha" >> "$WORK/body"
+  PREV="$tag"
   exists=no
   command -v gh >/dev/null && gh release view "$tag" >/dev/null 2>&1 && exists=yes
 
   if [ "$pre" = "yes" ]; then create_flag="--prerelease"; edit_flag="--prerelease=true"
   else create_flag="--latest"; edit_flag="--prerelease=false"; fi
+
+  asset=""
+  if build_asset "$tag" "$WORK/Detent.tgz"; then
+    asset="$WORK/Detent.tgz"
+  else
+    say "     (no add-in files at $tag - release gets no asset)"
+  fi
 
   if [ "$exists" = yes ]; then
     # CHANGELOG.md is the source of truth, so an existing release is brought
@@ -166,12 +232,13 @@ while IFS=$'\t' read -r tag _commit pre; do
     if [ "$DRY" = 0 ]; then
       gh release edit "$tag" --title "$text" \
         --notes-file "$WORK/body" $edit_flag
+      [ -n "$asset" ] && gh release upload "$tag" "$asset" --clobber
     fi
   else
     say "  +  $tag  create  \"$text\"  $create_flag"
     if [ "$DRY" = 0 ]; then
       gh release create "$tag" --title "$text" \
-        --notes-file "$WORK/body" $create_flag
+        --notes-file "$WORK/body" $create_flag ${asset:+"$asset"}
     fi
   fi
 done <<< "$MAP"

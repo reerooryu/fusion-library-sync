@@ -2,10 +2,26 @@
 
 Incremental sync of a Git-hosted CAD library into Autodesk Fusion's Data Panel.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reerooryu/fusion-library-sync/main/install.sh | bash
+```
+
+Unpacks the latest release into Fusion's AddIns folder, leaving `config.json`
+and `state/` alone, so the same command upgrades an existing install. Launch
+Fusion at least once first, so the folder exists. Then Utilities > ADD-INS >
+Scripts and Add-Ins > Add-Ins, select Detent, Run.
+
+Piping a script into a shell means trusting what it serves; the URL above is
+the file itself if you would rather read it first. Every release also carries
+a `Detent.tgz` you can unpack by hand.
+
+
 Downloads only what changed. Never touches a file it has already placed.
 Refuses to guess.
 
-**Status:** v0.1 — Fusion add-in, additive sync only. 62 tests.
+**Status:** v0.3.3 — Fusion add-in, additive sync only. 109 tests.
 
 ## Why
 

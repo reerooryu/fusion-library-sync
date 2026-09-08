@@ -9,4 +9,4 @@ interpreter and one sys.path - a package called "core" is a collision waiting
 for the first other add-in that ships one.
 """
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"

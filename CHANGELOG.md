@@ -2,7 +2,7 @@
 
 Detent syncs a Git-hosted CAD library into Fusion 360's Data Panel.
 
-**Only v0.3.2 is fit to use.** Every earlier release is left published for the
+**Only v0.3.3 is fit to use.** Every earlier release is left published for the
 record and marked broken. Two defects affect all of them regardless of what
 else they fixed:
 
@@ -25,9 +25,27 @@ folder, each on its own lineage, with no warning and no suffix.
 
 ---
 
-## v0.3.2 — Uploads that cannot be duplicated by a failed settle
+## v0.3.3 — One-line installer
 
-**The current release.**
+**The current release.** No behaviour change; v0.3.2's fixes with a way to
+install them.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/reerooryu/fusion-library-sync/main/install.sh | bash
+```
+
+Unpacks the latest release into Fusion's AddIns folder and leaves
+`config.json` and `state/` alone, so it upgrades an existing install as well
+as creating one. It also removes a `core/` directory left by any release
+before v0.3.1 — leaving it behind would let the stale package win on
+`sys.path`.
+
+Every release now carries a `Detent.tgz` built from that tag's own tree, so a
+tag is installable on its own. The installer only ever fetches
+`releases/latest/download`, which resolves to the newest non-prerelease, so
+the releases marked broken are never what it hands anyone.
+
+## v0.3.2 — Uploads that cannot be duplicated by a failed settle
 
 An audit found four defects, each reproduced before it was fixed and each
 mutation-checked after. Two of them could duplicate files.
