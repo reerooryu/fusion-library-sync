@@ -64,6 +64,8 @@ One line per commit, oldest first.
 - `feat: one-line installer, attached to every release` — `install.sh` plus a
   `Detent.tgz` asset built from each tag; release bodies gain a generated
   "What's Changed" list and `--print-notes` dumps them all.
+- `docs: lead the README with installing and using Detent` — removed a second,
+  contradictory Install section and a stale "not yet done" claim.
 
 ## Push
 
