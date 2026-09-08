@@ -66,6 +66,8 @@ One line per commit, oldest first.
   "What's Changed" list and `--print-notes` dumps them all.
 - `docs: lead the README with installing and using Detent` — removed a second,
   contradictory Install section and a stale "not yet done" claim.
+- `fix(github): retry transient failures and fall back from the archive` — a
+  504 on the first JSON request killed a whole sync.
 
 ## Push
 

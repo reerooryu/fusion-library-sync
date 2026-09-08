@@ -2,7 +2,7 @@
 
 Detent syncs a Git-hosted CAD library into Fusion 360's Data Panel.
 
-**Only v0.3.3 is fit to use.** Every earlier release is left published for the
+**Only v0.3.4 is fit to use.** Every earlier release is left published for the
 record and marked broken. Two defects affect all of them regardless of what
 else they fixed:
 
@@ -25,10 +25,31 @@ folder, each on its own lineage, with no warning and no suffix.
 
 ---
 
+## v0.3.4 — Survive a transient GitHub failure
+
+**The current release.**
+
+`urllib.error.HTTPError: HTTP Error 504: Gateway Timeout`, reported live. It
+came from `resolve_commit` — the first and smallest request a sync makes, one
+JSON GET for the ref's commit SHA. GitHub had a moment; Detent had no retry, so
+the run died before it read a single path.
+
+- Transient failures are retried four times with doubling backoff: 408, 425,
+  429 and the 5xx family, plus connection resets and read timeouts. A 404 or a
+  403 is never retried — it will not become a 200.
+- Giving up names the URL and the attempt count, rather than surfacing a raw
+  urllib traceback.
+- If the codeload archive fails anyway, the sync falls back to fetching files
+  individually. Much slower, but a 2.2 GB archive that GitHub builds on demand
+  is the most likely thing to time out, and finishing slowly beats not
+  finishing. Cancellation is still cancellation — it does not trigger the
+  fallback.
+
+114 tests.
+
 ## v0.3.3 — One-line installer
 
-**The current release.** No behaviour change; v0.3.2's fixes with a way to
-install them.
+No behaviour change; v0.3.2's fixes with a way to install them.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/reerooryu/fusion-library-sync/main/install.sh | bash

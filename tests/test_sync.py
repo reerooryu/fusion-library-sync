@@ -1073,3 +1073,103 @@ class TestBlockedRunDoesNotClaimToHaveChecked:
         m = Manifest.load(mpath)
         assert m is None or m.synced_commit is None, (
             "a run that placed nothing must not record a successful check")
+
+
+class TestTransientFailures:
+    """GitHub builds codeload archives on demand and the big ones time out.
+    Reported live: HTTP 504 on a first full-library sync."""
+
+    def _http_error(self, code):
+        import urllib.error
+        return urllib.error.HTTPError("http://x", code, "boom", {}, None)
+
+    def test_a_504_is_retried_and_then_succeeds(self):
+        import urllib.request
+        calls = {"n": 0}
+
+        class Body:
+            headers = {"Content-Length": "2"}
+            def read(self, *a): return b"ok"
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise self._http_error(504)
+            return Body()
+
+        real = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            t = gh.UrllibTransport(sleep=lambda s: None)
+            assert t.get_bytes("http://x") == b"ok"
+        finally:
+            urllib.request.urlopen = real
+        assert calls["n"] == 3, "should have retried twice then succeeded"
+
+    def test_a_404_is_not_retried(self):
+        import urllib.request, urllib.error
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            calls["n"] += 1
+            raise self._http_error(404)
+
+        real = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            t = gh.UrllibTransport(sleep=lambda s: None)
+            with pytest.raises(urllib.error.HTTPError):
+                t.get_bytes("http://x")
+        finally:
+            urllib.request.urlopen = real
+        assert calls["n"] == 1, "a 404 will never become a 200"
+
+    def test_giving_up_names_the_url(self):
+        import urllib.request
+        def fake_urlopen(req, timeout=None):
+            raise self._http_error(504)
+        real = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            t = gh.UrllibTransport(retries=1, sleep=lambda s: None)
+            with pytest.raises(gh.GitHubError) as e:
+                t.get_json("http://example/thing")
+        finally:
+            urllib.request.urlopen = real
+        assert "example/thing" in str(e.value) and "2 attempts" in str(e.value)
+
+    def test_a_dead_archive_falls_back_to_individual_files(self, small_tree,
+                                                           src, tmp_path):
+        """The whole point: a first sync that cannot get the tarball must still
+        finish, not abort the run."""
+        class NoTarball(FakeTransport):
+            def get_bytes(self, url, on_chunk=None):
+                if "codeload" in url:
+                    raise gh.GitHubError("504 Gateway Timeout")
+                return super().get_bytes(url, on_chunk)
+
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+        _plan, rep = S.sync(src, mpath, panel, NoTarball(small_tree), F3D,
+                            dry_run=False, threshold=1)   # force the tarball path
+
+        assert len(rep.added) == len(small_tree)
+        assert panel.total_files == len(small_tree)
+        assert panel.duplicates() == {}
+
+    def test_cancelling_during_the_archive_is_not_treated_as_a_failure(
+            self, small_tree, src, tmp_path):
+        """Cancel must stay cancel; falling back would restart the download
+        the user just stopped."""
+        class Cancelling(FakeTransport):
+            def get_bytes(self, url, on_chunk=None):
+                if "codeload" in url:
+                    raise gh.Cancelled("cancelled")
+                return super().get_bytes(url, on_chunk)
+
+        panel = FakeDataPanel()
+        with pytest.raises(gh.Cancelled):
+            S.sync(src, str(tmp_path / "m.json"), panel, Cancelling(small_tree),
+                   F3D, dry_run=False, threshold=1)
+        assert panel.total_files == 0
