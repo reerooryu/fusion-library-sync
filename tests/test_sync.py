@@ -1173,3 +1173,91 @@ class TestTransientFailures:
             S.sync(src, str(tmp_path / "m.json"), panel, Cancelling(small_tree),
                    F3D, dry_run=False, threshold=1)
         assert panel.total_files == 0
+
+
+class TestDownloadProgress:
+    """A 2.2 GB archive is minutes of waiting. The dialog must show it moving,
+    or the only honest reading is 'frozen'."""
+
+    def test_archive_progress_reports_bytes_and_advances(self, src, tmp_path):
+        seen = []
+
+        class Chunked(FakeTransport):
+            """Serves a real tar.gz, reporting bytes as it goes."""
+            def get_bytes(self, url, on_chunk=None):
+                if "codeload" not in url:
+                    return super().get_bytes(url, on_chunk)
+                import io, tarfile
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                    for path in self.tree:
+                        body = f"content-of:{path}".encode()
+                        info = tarfile.TarInfo(f"repo-c0ffee/{path}")
+                        info.size = len(body)
+                        tar.addfile(info, io.BytesIO(body))
+                data = buf.getvalue()
+                if on_chunk is not None:
+                    for got in (len(data) // 4, len(data) // 2,
+                                len(data) * 3 // 4, len(data)):
+                        on_chunk(got, len(data))
+                return data
+
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(8)}
+        gh.fetch_files(gh.Source("o/r", "main"), sorted(tree), str(tmp_path),
+                       Chunked(tree), "c0ffee",
+                       on_progress=lambda i, n, lbl: seen.append((i, n, lbl)),
+                       threshold=1)
+
+        during = [s for s in seen if "of" in s[2]]
+        assert during, f"no byte-level progress reported: {seen}"
+        assert "%" in during[0][2] and "B" in during[0][2], during[0][2]
+        # the bar must actually move, not sit at zero for the whole download
+        indexes = [i for i, _n, _l in during]
+        assert indexes[0] < indexes[-1], f"progress index never advanced: {indexes}"
+        assert indexes[-1] == 8
+
+    def test_the_label_survives_the_trip_through_sync(self, src, tmp_path):
+        """The bug was not in fetch_files - it computed the percentage fine.
+        apply_plan wrapped on_progress and rewrote the label, so the byte
+        count never reached the dialog. Assert on what the CALLER sees."""
+        seen = []
+
+        class Chunked(FakeTransport):
+            def get_bytes(self, url, on_chunk=None):
+                if "codeload" not in url:
+                    return super().get_bytes(url, on_chunk)
+                import io, tarfile
+                buf = io.BytesIO()
+                with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                    for path in self.tree:
+                        body = f"content-of:{path}".encode()
+                        info = tarfile.TarInfo(f"repo-c0ffee/{path}")
+                        info.size = len(body)
+                        tar.addfile(info, io.BytesIO(body))
+                data = buf.getvalue()
+                if on_chunk is not None:
+                    for got in (len(data) // 2, len(data)):
+                        on_chunk(got, len(data))
+                return data
+
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(6)}
+
+        def progress(i, n, label):
+            seen.append((i, label))
+            return True
+
+        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(), Chunked(tree),
+               F3D, dry_run=False, threshold=1, on_progress=progress)
+
+        byte_labels = [l for _i, l in seen if "of" in l and "%" in l]
+        assert byte_labels, f"no byte progress reached the caller: {seen[:6]}"
+
+    def test_per_file_progress_counts_files(self, src, tmp_path):
+        seen = []
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(4)}
+        gh.fetch_files(gh.Source("o/r", "main"), sorted(tree), str(tmp_path),
+                       FakeTransport(tree), "c0ffee",
+                       on_progress=lambda i, n, lbl: seen.append((i, n, lbl)),
+                       threshold=999)          # force the per-file path
+        assert [i for i, _n, _l in seen] == [1, 2, 3, 4]
+        assert seen[-1][2] == "Downloading 4/4"

@@ -2,7 +2,7 @@
 
 Detent syncs a Git-hosted CAD library into Fusion 360's Data Panel.
 
-**Only v0.3.4 is fit to use.** Every earlier release is left published for the
+**Only v0.3.5 is fit to use.** Every earlier release is left published for the
 record and marked broken. Two defects affect all of them regardless of what
 else they fixed:
 
@@ -25,9 +25,26 @@ folder, each on its own lineage, with no warning and no suffix.
 
 ---
 
-## v0.3.4 — Survive a transient GitHub failure
+## v0.3.5 — A download that shows it is moving
 
 **The current release.**
+
+A first sync sat on `Downloading 0/1198` with an empty bar for the whole 2.2 GB
+archive. The percentage was being computed correctly and then thrown away:
+`fetch_files` passed a label like `downloading 47%`, and `apply_plan` wrapped
+the callback and rewrote it as `Downloading {i}/{n}` with `i` hardcoded to 0 on
+the archive path — so the bar could not move either.
+
+`fetch_files` now owns its labels, because it is the only layer that knows
+whether this is one archive or N files. The bar tracks bytes scaled onto the
+file count, and the label reads `Downloading 412 MB of 2.2 GB (18%)`.
+
+This is the third instance of one shape: a value computed by the layer that
+knows it, discarded by a layer that does not.
+
+117 tests.
+
+## v0.3.4 — Survive a transient GitHub failure
 
 `urllib.error.HTTPError: HTTP Error 504: Gateway Timeout`, reported live. It
 came from `resolve_commit` — the first and smallest request a sync makes, one

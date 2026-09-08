@@ -257,10 +257,19 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
 
     if should_use_tarball(len(paths), threshold):
         def chunk(got, total):
-            if on_progress:
-                pct = f"{got * 100 // total}%" if total else human_bytes(got)
-                return on_progress(0, len(paths), f"downloading {pct}")
-            return None
+            # The bar tracks bytes, scaled onto the file count, because that
+            # is the only real measure during a single large archive download.
+            # Reporting index 0 throughout left it frozen at "0/1198" with an
+            # empty bar for the whole 2.2 GB.
+            if not on_progress:
+                return None
+            if total:
+                i = len(paths) * got // total
+                label = (f"Downloading {human_bytes(got)} of "
+                         f"{human_bytes(total)}  ({got * 100 // total}%)")
+            else:
+                i, label = 0, f"Downloading {human_bytes(got)}"
+            return on_progress(i, len(paths), label)
         try:
             data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
         except Cancelled:
@@ -294,6 +303,6 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
         except Exception as exc:                     # noqa: BLE001 - report, continue
             failures.append((p, f"{type(exc).__name__}: {exc}"))
         if on_progress:
-            on_progress(i, len(paths), p)
+            on_progress(i, len(paths), f"Downloading {i}/{len(paths)}")
 
     return fetched, failures

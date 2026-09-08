@@ -53,7 +53,8 @@ v0.3.0	feat(sync): detect manifest entries missing from the Data Panel	yes
 v0.3.1	docs: rename v0.1 to v0.1.0 and add --retag	yes
 v0.3.2	docs: changelog for v0.3.2	yes
 v0.3.3	feat: one-line installer, attached to every release	yes
-v0.3.4	HEAD	no
+v0.3.4	fix(github): retry transient failures and fall back from the archive	yes
+v0.3.5	HEAD	no
 MAPEOF
 )
 

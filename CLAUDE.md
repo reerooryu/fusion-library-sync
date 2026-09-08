@@ -68,6 +68,8 @@ One line per commit, oldest first.
   contradictory Install section and a stale "not yet done" claim.
 - `fix(github): retry transient failures and fall back from the archive` — a
   504 on the first JSON request killed a whole sync.
+- `fix(ui): let fetch_files own its download progress label` — the byte
+  percentage was computed and then overwritten with a frozen file counter.
 
 ## Push
 

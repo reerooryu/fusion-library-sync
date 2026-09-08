@@ -321,14 +321,12 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     try:
         wanted = [pp.repo_path for pp in mapped]
 
-        def dl_progress(i, n, label):
-            if on_progress:
-                return on_progress(i, n, f"Downloading {i}/{n}")
-            return None
-
+        # fetch_files owns its own labels: it is the only layer that knows
+        # whether this is one archive or N files, and how far along it is.
+        # Rewriting the label here is what discarded the byte percentage.
         fetched, fetch_failures = gh.fetch_files(
             src, wanted, workdir, transport, commit,
-            on_progress=dl_progress, threshold=threshold,
+            on_progress=on_progress, threshold=threshold,
         )
         report.failures.extend(fetch_failures)
 
