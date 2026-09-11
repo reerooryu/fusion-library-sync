@@ -2,7 +2,7 @@
 
 Detent syncs a Git-hosted CAD library into Fusion 360's Data Panel.
 
-**Only v0.3.6 is fit to use.** Every earlier release is left published for the
+**Only v0.4.0 is fit to use.** Every earlier release is left published for the
 record and marked broken. Two defects affect all of them regardless of what
 else they fixed:
 
@@ -25,9 +25,38 @@ folder, each on its own lineage, with no warning and no suffix.
 
 ---
 
-## v0.3.6 — A settle deadline that fits the batch
+## v0.4.0 — Faster downloads, and a dialog that behaves
 
 **The current release.**
+
+**Downloads no longer fetch the whole repository for part of it.** The codeload
+archive is always the entire repo, whatever was asked for, and the choice to
+use it counted files but never weighed them — so a 150-file delta pulled all
+2.2 GB. GitHub returns a byte size per blob and Detent was discarding it;
+`parse_tree` now keeps it, and the archive is used only when the selection is
+at least half the repository. With sizes unknown the old file-count rule
+stands, because guessing low is the expensive mistake.
+
+**Individual files download eight at a time.** `urllib` opens a fresh
+connection per request, so this path was dominated by round trips rather than
+bandwidth. Nothing in the pool touches the Fusion API — that stays on the main
+thread, which also keeps progress and cancellation responsive.
+
+The full-library first sync still uses one archive; that case was never the
+slow one.
+
+UI:
+
+- The progress dialog closes before the summary appears. `hide()` only queues
+  the close, so without pumping the event loop the old window sat behind the
+  modal box and looked stuck.
+- **Sync now** is the default action. It still previews and asks before
+  writing anything.
+- The command tooltip no longer opens with a blank line.
+
+130 tests.
+
+## v0.3.6 — A settle deadline that fits the batch
 
 A full 1,198-file sync placed 1,197 and reported one failure: *upload
 unresolved after 300s*. Every upload is fired at once, so the last file to be

@@ -1310,3 +1310,85 @@ class TestSettleDeadlineScales:
         S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
                FakeTransport(small_tree), F3D, dry_run=False, settle_wait=7.0)
         assert seen["wait"] == 7.0
+
+
+class TestDownloadStrategy:
+    """The archive is always the WHOLE repository. Counting files alone made a
+    150-file delta pull 2.2 GB."""
+
+    FULL = 2_362_232_012
+
+    def test_a_partial_selection_does_not_pull_the_whole_repo(self):
+        # 150 files, ~260 MB of a 2.2 GB repo
+        assert not gh.should_use_tarball(150, 100, 260 * 1024**2, self.FULL)
+
+    def test_the_whole_library_still_uses_the_archive(self):
+        assert gh.should_use_tarball(1198, 100, self.FULL, self.FULL)
+
+    def test_unknown_sizes_keep_the_old_rule(self):
+        """Guessing low would be the expensive mistake, so with no sizes the
+        file count still decides."""
+        assert gh.should_use_tarball(150, 100, 0, 0)
+        assert not gh.should_use_tarball(25, 100, 0, 0)
+
+    def test_sizes_are_captured_from_the_tree(self):
+        tree = gh.parse_tree({"truncated": False, "tree": [
+            {"path": "a.f3d", "type": "blob", "sha": "s1", "size": 1000},
+            {"path": "b.f3d", "type": "blob", "sha": "s2", "size": 2500},
+            {"path": "dir", "type": "tree", "sha": "s3"},
+        ]})
+        assert tree == {"a.f3d": "s1", "b.f3d": "s2"}, "still a plain mapping"
+        assert tree.total_bytes == 3500
+        assert tree.bytes_for(["a.f3d"]) == 1000
+
+    def test_a_tree_without_sizes_still_works(self):
+        tree = gh.parse_tree({"truncated": False, "tree": [
+            {"path": "a.f3d", "type": "blob", "sha": "s1"}]})
+        assert tree.total_bytes == 0 and tree["a.f3d"] == "s1"
+
+
+class TestParallelDownloads:
+    def test_every_file_arrives_exactly_once(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(40)}
+        fetched, failures = gh.fetch_files(
+            src, sorted(tree), str(tmp_path), FakeTransport(tree), "c0ffee",
+            threshold=99999)
+        assert not failures
+        assert sorted(fetched) == sorted(tree)
+        for path, local in fetched.items():
+            assert open(local).read() == f"content-of:{path}"
+
+    def test_one_bad_file_does_not_sink_the_rest(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(20)}
+        bad = "A/P7.f3d"
+        fetched, failures = gh.fetch_files(
+            src, sorted(tree), str(tmp_path),
+            FakeTransport(tree, fail_paths=[bad]), "c0ffee", threshold=99999)
+        assert [p for p, _m in failures] == [bad]
+        assert len(fetched) == len(tree) - 1
+
+    def test_progress_counts_every_file(self, src, tmp_path):
+        seen = []
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(30)}
+        gh.fetch_files(src, sorted(tree), str(tmp_path), FakeTransport(tree),
+                       "c0ffee", threshold=99999,
+                       on_progress=lambda i, n, l: seen.append(i) or True)
+        assert sorted(seen) == list(range(1, 31))
+
+    def test_cancel_stops_the_pool(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(50)}
+
+        def stop_after_five(i, n, label):
+            return i < 5
+
+        with pytest.raises(gh.Cancelled):
+            gh.fetch_files(src, sorted(tree), str(tmp_path),
+                           FakeTransport(tree), "c0ffee", threshold=99999,
+                           on_progress=stop_after_five, workers=2)
+
+    def test_a_single_worker_is_still_correct(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(5)}
+        fetched, failures = gh.fetch_files(
+            src, sorted(tree), str(tmp_path), FakeTransport(tree), "c0ffee",
+            threshold=99999, workers=1)
+        assert not failures and len(fetched) == 5

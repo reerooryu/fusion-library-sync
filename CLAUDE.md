@@ -72,6 +72,9 @@ One line per commit, oldest first.
   percentage was computed and then overwritten with a frozen file counter.
 - `fix(sync): scale the settle deadline with the batch size` — a flat 300s
   left the tail of a 1,198-file sync unresolved.
+- `perf(github): weigh the tarball decision and fetch files in parallel` —
+  blob sizes are kept; a partial selection no longer pulls 2.2 GB.
+- `fix(ui): close the progress dialog, default to Sync now, tidy the tooltip`.
 
 ## Push
 
