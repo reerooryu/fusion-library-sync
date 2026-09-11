@@ -282,7 +282,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                dry_run: bool = False,
                threshold: int = gh.TARBALL_THRESHOLD,
                settle_wait: Optional[float] = None,
-               known_lineages: Optional[Set[str]] = None) -> Report:
+               known_lineages: Optional[Set[str]] = None,
+               want_bytes: int = 0, total_bytes: int = 0) -> Report:
     """Additive half of a plan. Writes nothing when dry_run.
 
     known_lineages: every lineage already in the target subtree, from the
@@ -327,6 +328,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         fetched, fetch_failures = gh.fetch_files(
             src, wanted, workdir, transport, commit,
             on_progress=on_progress, threshold=threshold,
+            want_bytes=want_bytes, total_bytes=total_bytes,
         )
         report.failures.extend(fetch_failures)
 
@@ -436,7 +438,9 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
                         transport, commit, on_progress=on_progress,
                         dry_run=dry_run, threshold=threshold,
-                        settle_wait=settle_wait, known_lineages=present)
+                        settle_wait=settle_wait, known_lineages=present,
+                        want_bytes=getattr(tree, "bytes_for", lambda _p: 0)(selected),
+                        total_bytes=getattr(tree, "total_bytes", 0))
 
     # Stamp last, and here rather than inside apply_plan, which returns early
     # on every path that has nothing to upload. A run that finds nothing still

@@ -11,7 +11,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-VERSION = "0.3.6"
+VERSION = "0.4.0"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -39,9 +39,8 @@ from detent_core.datapanel import FusionDataPanel  # noqa: E402
 
 CMD_ID = "DetentSyncLibrary"
 CMD_NAME = "Sync Library"
-CMD_TIP = ("Sync a Git-hosted CAD library into this project.\n\n"
-           "Downloads only what changed. Never modifies a file it has "
-           "already placed.")
+CMD_TIP = ("Sync a Git-hosted CAD library into this project. Downloads only "
+           "what changed. Never modifies a file it has already placed.")
 PANEL_ID = "SolidScriptsAddinsPanel"    # Utilities tab > ADD-INS
 
 CONFIG_PATH = os.path.join(_HERE, "config.json")
@@ -68,6 +67,20 @@ def _fail(ui, what):
     detail = traceback.format_exc()
     path = _log(f"{what}\n{detail}")
     ui.messageBox(f"{what}\n\n{detail[-700:]}\n\nFull log:\n{path}")
+
+
+def _done(progress):
+    """Close a progress dialog and let Fusion actually repaint.
+
+    hide() queues the close; the window stays on screen until the event loop
+    runs. Showing a modal message box in that gap leaves the progress dialog
+    visible behind it, which looks like it never closed.
+    """
+    try:
+        progress.hide()
+        adsk.doEvents()
+    except Exception:                                  # noqa: BLE001
+        pass
 
 
 def _app():
@@ -119,8 +132,8 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             action = inputs.addDropDownCommandInput(
                 "action", "Action", adsk.core.DropDownStyles.TextListDropDownStyle)
-            action.listItems.add("Preview changes", True, "")
-            action.listItems.add("Sync now", False, "")
+            action.listItems.add("Sync now", True, "")
+            action.listItems.add("Preview changes", False, "")
             action.listItems.add("Adopt existing library", False, "")
             action.tooltip = (
                 "Preview lists what would change and writes nothing.\n"
@@ -256,7 +269,7 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
                          source.include, source.exclude, dry_run=True,
                          verify_placed=source.verify_placed)
     finally:
-        progress.hide()
+        _done(progress)
 
     summary = _plan_text(plan, source) if not plan.is_empty else "Everything is up to date."
     if not write:
@@ -302,12 +315,12 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
                                 dry_run=False, on_progress=on_progress,
                                 verify_placed=source.verify_placed)
     except gh.Cancelled:
-        progress.hide()
+        _done(progress)
         ui.messageBox("Cancelled. Nothing was left half-written - rerun to "
                       "pick up where it stopped.", "Detent")
         return
     finally:
-        progress.hide()
+        _done(progress)
 
     ui.messageBox(_report_text(report, manifest_path), "Detent - done")
 
@@ -330,7 +343,7 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
             src, manifest_path, panel, transport, at_ref,
             source.include, dry_run=True)
     finally:
-        progress.hide()
+        _done(progress)
 
     known = at_ref or "unknown"
     text = (f"Adopt {src.repo} at {known}\n\n"

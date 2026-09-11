@@ -6,6 +6,7 @@ one tarball; deltas fetch individual files.
 
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Protocol, Sequence, Tuple
+import concurrent.futures
 import io
 import json
 import os
@@ -19,8 +20,17 @@ API = "https://api.github.com"
 RAW = "https://raw.githubusercontent.com"
 CODELOAD = "https://codeload.github.com"
 
-# Above this many files, one tarball beats N requests. Tune with real timings.
+# Above this many files, one tarball MAY beat N requests - but the archive is
+# always the whole repository, so it only wins when we want most of it. Asking
+# for 150 of 1,198 files used to pull all 2.2 GB.
 TARBALL_THRESHOLD = 100
+TARBALL_FRACTION = 0.5
+
+# Parallel fetches for the per-file path. urllib opens a fresh connection per
+# request, so the wall clock here is dominated by round trips, not bandwidth;
+# eight in flight turns 1,198 sequential handshakes into 150 rounds. Kept
+# modest deliberately - this is someone's home connection, not a datacentre.
+DOWNLOAD_WORKERS = 8
 
 # GitHub builds a codeload archive on demand; for a 2.2 GB repository that
 # routinely times out at the edge. These are the statuses worth trying again -
@@ -119,17 +129,42 @@ class Source:
     subpath: str = ""
 
 
-def parse_tree(payload: dict) -> Dict[str, str]:
+class Tree(dict):
+    """{path: blob_sha}, carrying byte sizes alongside.
+
+    A dict subclass so every existing caller keeps treating it as the mapping
+    it always was; `.sizes` is extra. GitHub returns a size per blob and we
+    were throwing it away, which is why the tarball decision could only count
+    files and not weigh them.
+    """
+
+    def __init__(self, *args, sizes=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sizes: Dict[str, int] = sizes or {}
+
+    def bytes_for(self, paths) -> int:
+        return sum(self.sizes.get(p, 0) for p in paths)
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(self.sizes.values())
+
+
+def parse_tree(payload: dict) -> Tree:
     """{path: blob_sha} for blobs only. Raises if GitHub truncated the response."""
     if payload.get("truncated"):
         raise TreeTruncated(
             "tree truncated by GitHub; repo too large for a single recursive read"
         )
     out: Dict[str, str] = {}
+    sizes: Dict[str, int] = {}
     for entry in payload.get("tree", []):
         if entry.get("type") == "blob":
             out[entry["path"]] = entry["sha"]
-    return out
+            size = entry.get("size")
+            if isinstance(size, int):
+                sizes[entry["path"]] = size
+    return Tree(out, sizes=sizes)
 
 
 def resolve_commit(src: Source, transport: Transport) -> str:
@@ -171,8 +206,20 @@ def tarball_url(src: Source, commit: Optional[str] = None) -> str:
     return f"{CODELOAD}/{src.repo}/tar.gz/{commit or src.ref}"
 
 
-def should_use_tarball(n_files: int, threshold: int = TARBALL_THRESHOLD) -> bool:
-    return n_files >= threshold
+def should_use_tarball(n_files: int, threshold: int = TARBALL_THRESHOLD,
+                       want_bytes: int = 0, total_bytes: int = 0) -> bool:
+    """One archive, or N requests?
+
+    The archive is always the ENTIRE repository, whatever we asked for, so it
+    only pays when the selection is most of the repo. Counting files alone made
+    a 150-file delta download 2.2 GB. When sizes are unknown the old file-count
+    rule stands, because guessing low would be the expensive mistake.
+    """
+    if n_files < threshold:
+        return False
+    if want_bytes and total_bytes:
+        return want_bytes >= total_bytes * TARBALL_FRACTION
+    return True
 
 
 def human_bytes(n: float) -> str:
@@ -249,13 +296,15 @@ def extract_tarball(data: bytes, dest: str,
 def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 transport: Transport, commit: Optional[str] = None,
                 on_progress: Optional[Callable[[int, int, str], None]] = None,
-                threshold: int = TARBALL_THRESHOLD) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
+                threshold: int = TARBALL_THRESHOLD,
+                want_bytes: int = 0, total_bytes: int = 0,
+                workers: int = 0) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
     """Returns (fetched, failures). One unreachable file never aborts a run."""
     paths = list(paths)
     fetched: Dict[str, str] = {}
     failures: List[Tuple[str, str]] = []
 
-    if should_use_tarball(len(paths), threshold):
+    if should_use_tarball(len(paths), threshold, want_bytes, total_bytes):
         def chunk(got, total):
             # The bar tracks bytes, scaled onto the file count, because that
             # is the only real measure during a single large archive download.
@@ -295,17 +344,37 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 on_progress(len(fetched), len(paths), "tarball")
             return fetched, failures
 
-    for i, p in enumerate(paths, 1):
+    def one(path):
+        blob = fetch_blob(src, path, transport, commit)
+        out = os.path.join(dest, path.replace("/", os.sep))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as w:
+            w.write(blob)
+        return out
+
+    # Downloads run in a pool; nothing here touches the Fusion API, which is
+    # the main thread's alone. Progress and cancellation stay on this thread,
+    # inside as_completed, so on_progress still pumps Fusion's event loop.
+    workers = max(1, min(workers or DOWNLOAD_WORKERS, len(paths)))
+    done = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {pool.submit(one, p): p for p in paths}
         try:
-            blob = fetch_blob(src, p, transport, commit)
-            out = os.path.join(dest, p.replace("/", os.sep))
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            with open(out, "wb") as w:
-                w.write(blob)
-            fetched[p] = out
-        except Exception as exc:                     # noqa: BLE001 - report, continue
-            failures.append((p, f"{type(exc).__name__}: {exc}"))
-        if on_progress:
-            on_progress(i, len(paths), f"Downloading {i}/{len(paths)}")
+            for fut in concurrent.futures.as_completed(pending):
+                path = pending[fut]
+                try:
+                    fetched[path] = fut.result()
+                except Exception as exc:             # noqa: BLE001 - report, continue
+                    failures.append((path, f"{type(exc).__name__}: {exc}"))
+                done += 1
+                if on_progress and on_progress(
+                        done, len(paths),
+                        f"Downloading {done}/{len(paths)}") is False:
+                    raise Cancelled("download cancelled")
+        except BaseException:
+            # Stop what has not started; the few in flight finish on their own.
+            for f in pending:
+                f.cancel()
+            raise
 
     return fetched, failures
