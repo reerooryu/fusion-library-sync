@@ -11,8 +11,7 @@ Launch Fusion 360 at least once so its add-in folder exists, then run:
 curl -fsSL https://raw.githubusercontent.com/reerooryu/fusion-library-sync/main/install.sh | bash
 ```
 
-That unpacks the add-in into Fusion's AddIns folder. Nothing is synced yet —
-this only installs the tool.
+That unpacks the add-in into Fusion's AddIns folder. Nothing is synced yet, this only installs the tool.
 
 Then in Fusion:
 
