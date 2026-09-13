@@ -21,9 +21,7 @@ Then in Fusion:
 3. The command appears at **Utilities → ADD-INS → Sync Library**
 
 The same command upgrades an existing install; `config.json` and `state/` are
-left alone. Piping a script into a shell means trusting what it serves — the
-URL above is the file itself if you would rather read it first, and every
-release carries a `Detent.tgz` you can unpack by hand into
+left alone. Every release has a `Detent.tgz` you can unpack by hand into
 `.../API/AddIns/Detent`.
 
 ## 2. Use it
@@ -91,9 +89,8 @@ Typical release churn is 10–33 files. That is the gap this closes.
 > has been checked and the file it points at is gone.
 
 Fusion accepts same-named files in one folder without warning, error, or
-rename — verified against a live project: three files called `SyncProbe`, three
-lineage URNs, no complaint. A duplicate upload is silent corruption the user
-cannot see and cannot undo. Every structural decision here follows from
+rename, fully verified. A duplicate upload is silent corruption the user
+cannot undo. Every structural decision here follows from
 preventing that.
 
 ## Layout
