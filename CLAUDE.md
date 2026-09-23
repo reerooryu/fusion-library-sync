@@ -85,6 +85,10 @@ One line per commit, oldest first.
   leaving every drift recovery pinned at full. `detect_drift` now returns a
   `Drift` carrying the folder name map, and `Report.occupied` is the refusal.
 
+- `fix(release): map v0.3.2 to the commit that still exists` — the subject in
+  `publish.sh` was absorbed by the history rewrite, so `resolve()` found zero
+  matches and the script refused to tag or push anything at all.
+
 ## Push
 
 ```bash
