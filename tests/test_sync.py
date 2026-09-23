@@ -1713,3 +1713,56 @@ class TestProgressNeverOvershoots:
         assert [t for _i, t, _l in seen] == [2, 2], (
             "the total must exclude the file that was refused")
         assert [lbl.split()[1] for _i, _t, lbl in seen] == ["1/2", "2/2"]
+
+
+class TestTheConfirmationCountsWhatWillBeSent:
+    """The 'Upload N file(s)?' prompt used to count plan.add. A run also
+    re-places plan.missing, so a drift recovery went up with no prompt at all
+    and a mixed run asked about 5 files then sent 50."""
+
+    def _plan(self, add=0, missing=0):
+        p = PL.Plan()
+        p.add = [f"A/new{i}.f3d" for i in range(add)]
+        p.missing = [f"A/gone{i}.f3d" for i in range(missing)]
+        return p
+
+    def test_a_pure_drift_recovery_still_asks(self):
+        assert S.upload_count(self._plan(add=0, missing=45), S.Report()) == 45
+
+    def test_a_mixed_run_counts_both(self):
+        assert S.upload_count(self._plan(add=5, missing=45), S.Report()) == 50
+
+    def test_plain_adds_are_unchanged(self):
+        assert S.upload_count(self._plan(add=33), S.Report()) == 33
+
+    def test_nothing_to_do_is_zero(self):
+        assert S.upload_count(self._plan(), S.Report()) == 0
+
+    def test_refused_names_are_not_counted(self):
+        rep = S.Report(occupied=[("A/new0.f3d", "new0"), ("A/new1.f3d", "new1")])
+        assert S.upload_count(self._plan(add=5), rep) == 3
+
+    def test_everything_refused_means_nothing_is_sent(self):
+        rep = S.Report(occupied=[(f"A/new{i}.f3d", f"new{i}") for i in range(5)])
+        assert S.upload_count(self._plan(add=5), rep) == 0
+
+    def test_the_addin_asks_using_that_count(self):
+        """Source guard: the dialog must not go back to counting plan.add."""
+        import re
+        text = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "Detent.py"), encoding="utf-8").read()
+        body = text[text.index("def _do_sync"):text.index("def _do_adopt")]
+        assert "S.upload_count(plan, preview)" in body
+        assert not re.search(r"if plan\.add:", body), \
+            "the confirmation is gating on plan.add again"
+
+    def test_changed_files_are_named_not_just_counted(self, src, tmp_path):
+        """Detent cannot update these, so the list is the only thing it can
+        offer. A bare count leaves the user with nothing to act on."""
+        import re
+        text = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "Detent.py"), encoding="utf-8").read()
+        body = text[text.index("def _plan_text"):text.index("def _short")]
+        assert "plan.change[:8]" in body, "changed paths are not listed"

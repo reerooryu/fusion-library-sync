@@ -81,6 +81,20 @@ class Drift:
     names: Optional[Dict[Tuple[str, ...], Set[str]]] = None
 
 
+def upload_count(plan: "PL.Plan", report: Report) -> int:
+    """How many files a write run would actually send.
+
+    Not len(plan.add). A run also re-places everything in plan.missing, and the
+    confirmation used to count only the adds - so a drift recovery of 45 files
+    was uploaded with no prompt at all, and a run of 5 new plus 45 missing
+    asked to upload 5 and then sent 50.
+
+    Files refused for a taken name are subtracted: they are in to_place but
+    nothing is sent for them.
+    """
+    return max(0, len(plan.to_place) - len(report.occupied))
+
+
 def folder_change_impact(manifest: Optional[Manifest],
                          old_folder: str, new_folder: str) -> int:
     """How many recorded files moving the target folder would strand.

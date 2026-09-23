@@ -97,6 +97,12 @@ One line per commit, oldest first.
   folder. Syncing into a folder that already has files is called out, because
   v0.4.1 refuses those uploads rather than duplicating them.
 
+- `fix(ui): confirm the real upload count, and name the changed files` — the
+  prompt counted `plan.add` while the run uploads `add + missing`, so drift
+  recovery never asked and a mixed run understated itself. `S.upload_count`
+  is the predicate. Changed-upstream paths are now listed rather than
+  counted, because Detent cannot update them and the list is all it can offer.
+
 ## Push
 
 ```bash

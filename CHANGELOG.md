@@ -70,7 +70,16 @@ which most Windows users do not have, and fails on WSL besides. The README
 leads with click-by-click instructions for both platforms, then branches on
 whether you already have the library: adopt it, or start clean in a new folder.
 
-152 tests.
+**The upload confirmation counts what will actually be sent.** It counted new
+files only, but a run also re-places files that went missing from the Data
+Panel — so a drift recovery of 45 files uploaded with no prompt at all, and a
+run of 5 new plus 45 missing asked to upload 5 and then sent 50.
+
+**Files that changed upstream are named, not just counted.** Detent cannot
+update them, so the list is the only useful thing it can give you. A count on
+its own left you with nothing to act on.
+
+160 tests.
 
 ## v0.4.0 — Faster downloads, and a dialog that behaves
 

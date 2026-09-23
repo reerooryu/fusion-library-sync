@@ -318,8 +318,12 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     # still goes through the write path below: it reconciles interrupted
     # uploads and records that this check happened, which is exactly the case
     # the manifest header used to miss.
-    if plan.add:
-        n = len(plan.add)
+    #
+    # Count what will actually be sent, not just the new files. A re-placement
+    # run uploads too, and gating this on plan.add meant 45 files going up with
+    # no prompt at all.
+    n = S.upload_count(plan, preview)
+    if n:
         warn = ""
         if n >= gh.TARBALL_THRESHOLD:
             warn = ("\n\nThis is a full first sync. It downloads the whole "
@@ -428,6 +432,15 @@ def _plan_text(plan, source) -> str:
         lines.append(f"  ? {len(plan.unverified):5d}  unverified")
     if plan.inflight:
         lines.append(f"  ! {len(plan.inflight):5d}  interrupted, will reconcile")
+    if plan.change:
+        # Detent cannot update these, so naming them is the only help it can
+        # give. A count alone leaves the user with no idea what to replace.
+        lines += ["", "Changed upstream - Detent cannot update these. Replace "
+                      "them by hand if you want the new versions:"]
+        lines += [f"    {_short(p)}" for p in plan.change[:8]]
+        if len(plan.change) > 8:
+            lines.append(f"    ... and {len(plan.change) - 8} more")
+
     place = plan.to_place
     if place:
         lines += ["", f"Estimated: {gh.estimate(len(place))}"]
