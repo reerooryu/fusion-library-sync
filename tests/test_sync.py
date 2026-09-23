@@ -3,6 +3,7 @@ with the same name. Every test checks that sync never creates one."""
 
 import os
 import sys
+import urllib.parse
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -55,6 +56,45 @@ class FakeTransport:
         if path in self.fail_paths:
             raise OSError("simulated network failure")
         return f"content-of:{path}".encode()
+
+
+class ArchiveTransport(FakeTransport):
+    """Fails raw downloads for `fail_raw` paths (all, if True) and serves a
+    real .tar.gz of the tree, reporting bytes as it goes. Records every URL."""
+
+    def __init__(self, tree, fail_raw=True, archive_error=None, **kw):
+        super().__init__(tree, **kw)
+        self.fail_raw = fail_raw
+        self.archive_error = archive_error
+        self.urls = []
+
+    def get_bytes(self, url, on_chunk=None):
+        self.urls.append(url)
+        if "codeload" not in url:
+            path = urllib.parse.unquote("/".join(url.split("/")[6:]))
+            if self.fail_raw is True or path in (self.fail_raw or ()):
+                raise OSError("429 Too Many Requests")
+            return super().get_bytes(url)
+        if self.archive_error:
+            raise self.archive_error
+        import io, tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for path in self.tree:
+                body = f"content-of:{path}".encode()
+                info = tarfile.TarInfo(f"repo-c0ffee/{path}")
+                info.size = len(body)
+                tar.addfile(info, io.BytesIO(body))
+        data = buf.getvalue()
+        if on_chunk is not None:
+            for got in (len(data) // 4, len(data) // 2, len(data) * 3 // 4, len(data)):
+                if on_chunk(got, len(data)) is False:
+                    raise gh.Cancelled("download cancelled")
+        return data
+
+    @property
+    def archive_requests(self):
+        return sum("codeload" in u for u in self.urls)
 
 
 @pytest.fixture
@@ -283,10 +323,6 @@ class TestHostilePaths:
 
 
 class TestStrategy:
-    def test_tarball_chosen_only_above_threshold(self):
-        assert not gh.should_use_tarball(27)
-        assert gh.should_use_tarball(1193)
-
     def test_truncated_tree_raises_rather_than_lying(self):
         with pytest.raises(gh.TreeTruncated):
             gh.parse_tree({"truncated": True, "tree": []})
@@ -406,28 +442,21 @@ class TestEstimates:
 
         assert secs(2) < secs(45) < secs(1198)
 
-    def test_threshold_marks_a_bootstrap(self):
-        assert 1198 >= gh.TARBALL_THRESHOLD
-        assert 25 < gh.TARBALL_THRESHOLD
-
 
 class TestCancel:
     """Cancel stops the download and leaves nothing half-done."""
 
-    class CancellingTransport(FakeTransport):
-        def get_bytes(self, url, on_chunk=None):
-            if on_chunk is not None:
-                on_chunk(1 << 20, 4 << 20)      # caller says stop
-                raise gh.Cancelled("cancelled")
-            return super().get_bytes(url)
+    @staticmethod
+    def stop_while_downloading(i, n, label):
+        return not label.startswith("Downloading")
 
     def test_cancel_during_download_writes_nothing(self, small_tree, src, tmp_path):
         panel = FakeDataPanel()
-        tr = self.CancellingTransport(small_tree)
         mpath = str(tmp_path / "m.json")
 
         with pytest.raises(gh.Cancelled):
-            S.sync(src, mpath, panel, tr, F3D, dry_run=False, threshold=1)
+            S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                   dry_run=False, on_progress=self.stop_while_downloading)
 
         assert panel.total_files == 0
         assert panel.duplicates() == {}
@@ -445,10 +474,11 @@ class TestCancel:
         assert was
 
         # More files upstream now, and the download is interrupted part way.
-        aborted = self.CancellingTransport(rest)
+        aborted = FakeTransport(rest)
         aborted.commit = "commit_BBB"
         with pytest.raises(gh.Cancelled):
-            S.sync(src, mpath, panel, aborted, F3D, dry_run=False, threshold=1)
+            S.sync(src, mpath, panel, aborted, F3D, dry_run=False,
+                   on_progress=self.stop_while_downloading)
 
         m = Manifest.load(mpath)
         assert m.synced_at == was
@@ -1134,37 +1164,73 @@ class TestTransientFailures:
             urllib.request.urlopen = real
         assert "example/thing" in str(e.value) and "2 attempts" in str(e.value)
 
-    def test_a_dead_archive_falls_back_to_individual_files(self, small_tree,
+    def test_many_failed_downloads_fall_back_to_the_archive(self, small_tree,
                                                            src, tmp_path):
-        """If the archive fails, download the files one by one."""
-        class NoTarball(FakeTransport):
-            def get_bytes(self, url, on_chunk=None):
-                if "codeload" in url:
-                    raise gh.GitHubError("504 Gateway Timeout")
-                return super().get_bytes(url, on_chunk)
-
+        """What a GitHub rate limit looks like: every raw download refused."""
+        tr = ArchiveTransport(small_tree, fail_raw=True)
         panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
-        _plan, rep = S.sync(src, mpath, panel, NoTarball(small_tree), F3D,
-                            dry_run=False, threshold=1)   # force the tarball path
+        _plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False,
+                            fallback_at=3)
 
+        assert tr.archive_requests == 1
+        assert rep.failures == []
         assert len(rep.added) == len(small_tree)
-        assert panel.total_files == len(small_tree)
         assert panel.duplicates() == {}
 
-    def test_cancelling_during_the_archive_is_not_treated_as_a_failure(
-            self, small_tree, src, tmp_path):
-        """Cancel must not trigger the fallback download."""
-        class Cancelling(FakeTransport):
-            def get_bytes(self, url, on_chunk=None):
-                if "codeload" in url:
-                    raise gh.Cancelled("cancelled")
-                return super().get_bytes(url, on_chunk)
+    def test_a_few_failures_do_not_fetch_the_archive(self, small_tree, src,
+                                                     tmp_path):
+        bad = sorted(small_tree)[0]
+        tr = ArchiveTransport(small_tree, fail_raw=[bad])
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(), tr,
+                            F3D, dry_run=False, fallback_at=3)
 
-        panel = FakeDataPanel()
+        assert tr.archive_requests == 0, "2.2 GB is not worth one file"
+        assert [p for p, _m in rep.failures] == [bad]
+        assert len(rep.added) == len(small_tree) - 1
+
+    def test_a_dead_archive_keeps_the_original_failures(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(5)}
+        tr = ArchiveTransport(tree, fail_raw=True,
+                              archive_error=gh.GitHubError("504 Gateway Timeout"))
+        fetched, failures = gh.fetch_files(src, sorted(tree), str(tmp_path), tr,
+                                           "c0ffee", fallback_at=3)
+        assert fetched == {}
+        assert sorted(p for p, _m in failures) == sorted(tree)
+        assert all("429" in m for _p, m in failures), "the real reason is kept"
+
+    def test_the_archive_only_fills_the_gaps(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(6)}
+        failing = sorted(tree)[:4]
+        tr = ArchiveTransport(tree, fail_raw=failing)
+        fetched, failures = gh.fetch_files(src, sorted(tree), str(tmp_path), tr,
+                                           "c0ffee", fallback_at=3)
+        assert failures == [] and sorted(fetched) == sorted(tree)
+        for path, local in fetched.items():
+            assert open(local).read() == f"content-of:{path}"
+
+    def test_fallback_off(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(5)}
+        tr = ArchiveTransport(tree, fail_raw=True)
+        _f, failures = gh.fetch_files(src, sorted(tree), str(tmp_path), tr,
+                                      "c0ffee", fallback_at=0)
+        assert tr.archive_requests == 0 and len(failures) == 5
+
+    def test_cancel_during_downloads_never_starts_the_archive(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(20)}
+        tr = ArchiveTransport(tree, fail_raw=True)
         with pytest.raises(gh.Cancelled):
-            S.sync(src, str(tmp_path / "m.json"), panel, Cancelling(small_tree),
-                   F3D, dry_run=False, threshold=1)
-        assert panel.total_files == 0
+            gh.fetch_files(src, sorted(tree), str(tmp_path), tr, "c0ffee",
+                           fallback_at=3, workers=1,
+                           on_progress=lambda i, n, l: i < 2)
+        assert tr.archive_requests == 0
+
+    def test_cancel_during_the_archive_is_still_a_cancel(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(5)}
+        tr = ArchiveTransport(tree, fail_raw=True)
+        with pytest.raises(gh.Cancelled):
+            gh.fetch_files(src, sorted(tree), str(tmp_path), tr, "c0ffee",
+                           fallback_at=3,
+                           on_progress=lambda i, n, l: "archive" not in l)
 
 
 class TestDownloadProgress:
@@ -1172,83 +1238,44 @@ class TestDownloadProgress:
 
     def test_archive_progress_reports_bytes_and_advances(self, src, tmp_path):
         seen = []
-
-        class Chunked(FakeTransport):
-            """Serves a real tar.gz, reporting bytes as it goes."""
-            def get_bytes(self, url, on_chunk=None):
-                if "codeload" not in url:
-                    return super().get_bytes(url, on_chunk)
-                import io, tarfile
-                buf = io.BytesIO()
-                with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-                    for path in self.tree:
-                        body = f"content-of:{path}".encode()
-                        info = tarfile.TarInfo(f"repo-c0ffee/{path}")
-                        info.size = len(body)
-                        tar.addfile(info, io.BytesIO(body))
-                data = buf.getvalue()
-                if on_chunk is not None:
-                    for got in (len(data) // 4, len(data) // 2,
-                                len(data) * 3 // 4, len(data)):
-                        on_chunk(got, len(data))
-                return data
-
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(8)}
-        gh.fetch_files(gh.Source("o/r", "main"), sorted(tree), str(tmp_path),
-                       Chunked(tree), "c0ffee",
-                       on_progress=lambda i, n, lbl: seen.append((i, n, lbl)),
-                       threshold=1)
+        gh.fetch_files(src, sorted(tree), str(tmp_path),
+                       ArchiveTransport(tree, fail_raw=True), "c0ffee",
+                       fallback_at=1,
+                       on_progress=lambda i, n, lbl: seen.append((i, n, lbl)))
 
-        during = [s for s in seen if "of" in s[2]]
+        during = [s for s in seen if "archive" in s[2] and " of " in s[2]]
         assert during, f"no byte-level progress reported: {seen}"
-        assert " of " in during[0][2] and "B" in during[0][2], during[0][2]
-        assert "%" not in during[0][2], "a % would show through Fusion's escape"
-        # the bar must move
+        assert "B" in during[0][2] and "%" not in during[0][2], during[0][2]
         indexes = [i for i, _n, _l in during]
-        assert indexes[0] < indexes[-1], f"progress index never advanced: {indexes}"
+        assert indexes[0] < indexes[-1], f"progress never advanced: {indexes}"
         assert indexes[-1] == 8
 
     def test_the_label_survives_the_trip_through_sync(self, src, tmp_path):
         """Checks the label the add-in actually receives, not just fetch_files."""
         seen = []
-
-        class Chunked(FakeTransport):
-            def get_bytes(self, url, on_chunk=None):
-                if "codeload" not in url:
-                    return super().get_bytes(url, on_chunk)
-                import io, tarfile
-                buf = io.BytesIO()
-                with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-                    for path in self.tree:
-                        body = f"content-of:{path}".encode()
-                        info = tarfile.TarInfo(f"repo-c0ffee/{path}")
-                        info.size = len(body)
-                        tar.addfile(info, io.BytesIO(body))
-                data = buf.getvalue()
-                if on_chunk is not None:
-                    for got in (len(data) // 2, len(data)):
-                        on_chunk(got, len(data))
-                return data
-
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(6)}
 
         def progress(i, n, label):
-            seen.append((i, label))
+            seen.append(label)
             return True
 
-        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(), Chunked(tree),
-               F3D, dry_run=False, threshold=1, on_progress=progress)
+        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(), FakeTransport(tree),
+               F3D, dry_run=False, on_progress=progress)
+        assert "Downloading 6/6" in seen, seen
 
-        byte_labels = [l for _i, l in seen if " of " in l and "B" in l]
-        assert byte_labels, f"no byte progress reached the caller: {seen[:6]}"
+        seen.clear()
+        S.sync(src, str(tmp_path / "m2.json"), FakeDataPanel(),
+               ArchiveTransport(tree, fail_raw=True), F3D, dry_run=False,
+               fallback_at=1, on_progress=progress)
+        assert any("archive" in l and " of " in l for l in seen), seen
 
     def test_per_file_progress_counts_files(self, src, tmp_path):
         seen = []
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(4)}
         gh.fetch_files(gh.Source("o/r", "main"), sorted(tree), str(tmp_path),
                        FakeTransport(tree), "c0ffee",
-                       on_progress=lambda i, n, lbl: seen.append((i, n, lbl)),
-                       threshold=999)          # force the per-file path
+                       on_progress=lambda i, n, lbl: seen.append((i, n, lbl)))          # force the per-file path
         assert [i for i, _n, _l in seen] == [1, 2, 3, 4]
         assert seen[-1][2] == "Downloading 4/4"
 
@@ -1270,7 +1297,7 @@ class TestSettleDeadlineScales:
         monkeypatch.setattr(S, "settle", spy)
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(400)}
         S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
-               FakeTransport(tree), F3D, dry_run=False, threshold=99999)
+               FakeTransport(tree), F3D, dry_run=False)
         assert seen["n"] == 400
         assert seen["wait"] >= 400, f"deadline did not scale: {seen}"
 
@@ -1301,21 +1328,16 @@ class TestSettleDeadlineScales:
 
 
 class TestDownloadStrategy:
-    """The archive is the whole repo, so it's only used for most of the repo."""
+    """Files download individually, several at once. The archive downloads as
+    one slow stream (10 Mbit/s against 117 measured), so it's only a fallback."""
 
-    FULL = 2_362_232_012
-
-    def test_a_partial_selection_does_not_pull_the_whole_repo(self):
-        # 150 files, ~260 MB of a 2.2 GB repo
-        assert not gh.should_use_tarball(150, 100, 260 * 1024**2, self.FULL)
-
-    def test_the_whole_library_still_uses_the_archive(self):
-        assert gh.should_use_tarball(1198, 100, self.FULL, self.FULL)
-
-    def test_unknown_sizes_keep_the_old_rule(self):
-        """Without sizes, fall back to counting files."""
-        assert gh.should_use_tarball(150, 100, 0, 0)
-        assert not gh.should_use_tarball(25, 100, 0, 0)
+    def test_the_whole_library_downloads_file_by_file(self, src, tmp_path):
+        tree = {f"A/P{i}.f3d": f"s{i}" for i in range(1198)}
+        tr = ArchiveTransport(tree, fail_raw=False)
+        fetched, failures = gh.fetch_files(src, sorted(tree), str(tmp_path), tr,
+                                           "c0ffee")
+        assert not failures and len(fetched) == 1198
+        assert tr.archive_requests == 0
 
     def test_sizes_are_captured_from_the_tree(self):
         tree = gh.parse_tree({"truncated": False, "tree": [
@@ -1337,8 +1359,7 @@ class TestParallelDownloads:
     def test_every_file_arrives_exactly_once(self, src, tmp_path):
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(40)}
         fetched, failures = gh.fetch_files(
-            src, sorted(tree), str(tmp_path), FakeTransport(tree), "c0ffee",
-            threshold=99999)
+            src, sorted(tree), str(tmp_path), FakeTransport(tree), "c0ffee")
         assert not failures
         assert sorted(fetched) == sorted(tree)
         for path, local in fetched.items():
@@ -1349,7 +1370,7 @@ class TestParallelDownloads:
         bad = "A/P7.f3d"
         fetched, failures = gh.fetch_files(
             src, sorted(tree), str(tmp_path),
-            FakeTransport(tree, fail_paths=[bad]), "c0ffee", threshold=99999)
+            FakeTransport(tree, fail_paths=[bad]), "c0ffee")
         assert [p for p, _m in failures] == [bad]
         assert len(fetched) == len(tree) - 1
 
@@ -1357,7 +1378,7 @@ class TestParallelDownloads:
         seen = []
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(30)}
         gh.fetch_files(src, sorted(tree), str(tmp_path), FakeTransport(tree),
-                       "c0ffee", threshold=99999,
+                       "c0ffee",
                        on_progress=lambda i, n, l: seen.append(i) or True)
         assert sorted(seen) == list(range(1, 31))
 
@@ -1369,14 +1390,13 @@ class TestParallelDownloads:
 
         with pytest.raises(gh.Cancelled):
             gh.fetch_files(src, sorted(tree), str(tmp_path),
-                           FakeTransport(tree), "c0ffee", threshold=99999,
+                           FakeTransport(tree), "c0ffee",
                            on_progress=stop_after_five, workers=2)
 
     def test_a_single_worker_is_still_correct(self, src, tmp_path):
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(5)}
         fetched, failures = gh.fetch_files(
-            src, sorted(tree), str(tmp_path), FakeTransport(tree), "c0ffee",
-            threshold=99999, workers=1)
+            src, sorted(tree), str(tmp_path), FakeTransport(tree), "c0ffee", workers=1)
         assert not failures and len(fetched) == 5
 
 
@@ -1591,13 +1611,6 @@ class TestSubpathKeepsBlobSizes:
         tree = gh.fetch_tree(gh.Source("o/r", "main"), self.T())
         assert tree.total_bytes == 3010
 
-    def test_a_subpath_delta_does_not_reach_for_the_archive(self):
-        tree = gh.fetch_tree(gh.Source("o/r", "main", "cad"), self.T())
-        assert not gh.should_use_tarball(
-            150, threshold=100,
-            want_bytes=tree.bytes_for(["cad/a.f3d"]),
-            total_bytes=tree.total_bytes)
-
 
 class TestProgressNeverOvershoots:
     """The progress bar maximum must match what's actually sent."""
@@ -1688,3 +1701,112 @@ class TestTheConfirmationCountsWhatWillBeSent:
             "Detent.py"), encoding="utf-8").read()
         body = text[text.index("def _plan_text"):text.index("def _short")]
         assert "plan.change[:8]" in body, "changed paths are not listed"
+
+
+class TestFolderCheck:
+    """Preview reports the folder's file count, duplicate names and files
+    Detent doesn't know about, from the scan it already does."""
+
+    def test_a_clean_sync_checks_clean(self, small_tree, src, tmp_path):
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=True)
+        assert rep.check.files == len(small_tree)
+        assert rep.check.duplicates == {}
+        assert rep.check.untracked == 0
+
+    def test_duplicates_are_named_with_their_folder(self, src, tmp_path):
+        panel = FakeDataPanel()
+        folder = panel.ensure_folder(("A", "B"))
+        panel.upload(folder, "/tmp/x", "Part")
+        panel.upload(folder, "/tmp/x", "Part")
+        panel.upload(panel.ensure_folder(("A",)), "/tmp/x", "Part")  # different folder: fine
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel,
+                            FakeTransport({}), F3D, dry_run=True)
+        assert rep.check.duplicates == {"A/B/Part": 2}
+        assert rep.check.files == 3 and rep.check.untracked == 3
+
+    def test_hand_added_files_are_untracked(self, small_tree, src, tmp_path):
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        panel.upload(panel.ensure_folder(("Extra",)), "/tmp/x", "Mine")
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=True)
+        assert rep.check.untracked == 1
+        assert rep.check.files == len(small_tree) + 1
+
+    def test_adopted_files_count_as_tracked(self, small_tree, src, tmp_path):
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+        for path in small_tree:
+            pp = S.P.map_path(path)
+            panel.upload(panel.ensure_folder(pp.folders), "/tmp/x", pp.name)
+        S.adopt_existing(src, mpath, panel, FakeTransport(small_tree), "v1",
+                         F3D, dry_run=False)
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=True)
+        assert rep.check.untracked == 0 and rep.check.files == len(small_tree)
+
+    def test_no_scan_means_no_check(self, small_tree, src, tmp_path):
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
+                            FakeTransport(small_tree), F3D, dry_run=True,
+                            verify_placed=False)
+        assert rep.check is None and S.check_lines(rep.check) == []
+
+    def test_a_failed_scan_means_no_check(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+
+        def boom():
+            raise RuntimeError("Data Panel unreachable")
+        panel.scan = boom
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel,
+                            FakeTransport(small_tree), F3D, dry_run=True)
+        assert rep.check is None
+
+    def test_the_line_shown_to_the_user(self):
+        d = S.Drift(files=48, duplicates={}, untracked=0, present=set(), names={})
+        assert S.check_lines(d) == [
+            "Folder check: 48 file(s), 0 duplicate name(s), 0 not tracked by Detent"]
+        d = S.Drift(files=9, untracked=2, present=set(), names={},
+                    duplicates={f"A/P{i}": 2 for i in range(7)})
+        lines = S.check_lines(d)
+        assert lines[0].startswith("Folder check: 9 file(s), 7 duplicate name(s)")
+        assert lines[1] == "    A/P0  (x2)"
+        assert lines[-1] == "    ... and 2 more"
+
+    def test_the_addin_shows_it(self):
+        text = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "Detent.py"), encoding="utf-8").read()
+        body = text[text.index("def _do_sync"):text.index("def _do_adopt")]
+        assert "S.check_lines(preview.check)" in body
+
+
+class TestDownloadSize:
+    """The preview and the prompt show how much will be downloaded."""
+
+    class Sized(FakeTransport):
+        def get_json(self, url):
+            payload, h = super().get_json(url)
+            for e in payload.get("tree", []):
+                e["size"] = 1000
+            return payload, h
+
+    def test_preview_knows_the_size(self, small_tree, src, tmp_path):
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
+                            self.Sized(small_tree), F3D, dry_run=True)
+        assert rep.download_bytes == 1000 * len(small_tree)
+
+    def test_refused_files_are_not_counted(self, src, tmp_path):
+        tree = {"A/Part.f3d": "s1", "A/Other.f3d": "s2"}
+        panel = FakeDataPanel()
+        panel.upload(panel.ensure_folder(("A",)), "/tmp/x", "Part")
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel,
+                            self.Sized(tree), F3D, dry_run=True)
+        assert rep.download_bytes == 1000
+
+    def test_the_addin_uses_it(self):
+        text = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "Detent.py"), encoding="utf-8").read()
+        assert "gh.estimate(n, preview.download_bytes)" in text

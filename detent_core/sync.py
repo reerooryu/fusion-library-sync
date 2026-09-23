@@ -7,6 +7,7 @@ names, so the manifest is the only guard. It is saved before each upload
 (inflight), after it's confirmed (placed), and after every file.
 """
 
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import shutil
@@ -38,6 +39,10 @@ class Report:
     conflicts: List[Tuple[str, str]] = field(default_factory=list)
     # New files whose name is already taken in the folder. Not uploaded.
     occupied: List[Tuple[str, str]] = field(default_factory=list)
+    # Bytes this run will download. Excludes files refused above.
+    download_bytes: int = 0
+    # The folder as it was when the run started. None if it wasn't scanned.
+    check: Optional["Drift"] = None
 
     @property
     def ok(self) -> bool:
@@ -67,13 +72,30 @@ class Report:
 class Drift:
     """Result of one scan of the Data Panel.
 
-    `present` and `names` are None if no scan ran. None means unknown, not
-    empty.
+    `present`, `names`, `files` and `untracked` are None if no scan ran. None
+    means unknown, not empty.
     """
     missing: Set[str] = field(default_factory=set)
     occupied: Dict[str, str] = field(default_factory=dict)
     present: Optional[Set[str]] = None
     names: Optional[Dict[Tuple[str, ...], Set[str]]] = None
+    files: Optional[int] = None                 # files in the folder
+    duplicates: Dict[str, int] = field(default_factory=dict)  # "path/name": count
+    untracked: Optional[int] = None             # files not in the manifest
+
+
+def check_lines(check: Optional[Drift]) -> List[str]:
+    """The folder check shown in Preview. Empty if the folder wasn't scanned."""
+    if check is None or check.files is None:
+        return []
+    lines = [f"Folder check: {check.files} file(s), "
+             f"{len(check.duplicates)} duplicate name(s), "
+             f"{check.untracked} not tracked by Detent"]
+    for path, n in sorted(check.duplicates.items())[:5]:
+        lines.append(f"    {path}  (x{n})")
+    if len(check.duplicates) > 5:
+        lines.append(f"    ... and {len(check.duplicates) - 5} more")
+    return lines
 
 
 def upload_count(plan: "PL.Plan", report: Report) -> int:
@@ -133,6 +155,7 @@ def detect_drift(manifest: Manifest, panel: DataPanel) -> Drift:
     occupied  lineage gone, another file has the name: report, don't upload
     present   every lineage found, so settle can tell our uploads apart
     names     every name per folder, so new files don't land on a taken name
+    files, duplicates, untracked   the folder check shown in Preview
 
     If the scan fails, return an empty Drift. Treating a failed scan as
     "everything is gone" would re-upload the whole library.
@@ -147,6 +170,15 @@ def detect_drift(manifest: Manifest, panel: DataPanel) -> Drift:
 
     present = {f.lineage for files in scan.values() for f in files}
     names = {folders: {f.name for f in files} for folders, files in scan.items()}
+
+    duplicates: Dict[str, int] = {}
+    for folders, files in scan.items():
+        for name, n in Counter(f.name for f in files).items():
+            if n > 1:
+                duplicates["/".join(folders + (name,))] = n
+    tracked = {e.lineage for e in manifest.files.values() if e.lineage}
+    untracked = sum(1 for files in scan.values() for f in files
+                    if f.lineage not in tracked)
 
     missing: Set[str] = set()
     occupied: Dict[str, str] = {}
@@ -164,7 +196,9 @@ def detect_drift(manifest: Manifest, panel: DataPanel) -> Drift:
             occupied[path] = want
         else:
             missing.add(path)
-    return Drift(missing=missing, occupied=occupied, present=present, names=names)
+    return Drift(missing=missing, occupied=occupied, present=present, names=names,
+                 files=sum(len(v) for v in scan.values()),
+                 duplicates=duplicates, untracked=untracked)
 
 
 def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
@@ -282,10 +316,9 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                workdir: Optional[str] = None,
                on_progress: Optional[Progress] = None,
                dry_run: bool = False,
-               threshold: int = gh.TARBALL_THRESHOLD,
+               fallback_at: int = gh.ARCHIVE_FALLBACK_MIN,
                settle_wait: Optional[float] = None,
                known_lineages: Optional[Set[str]] = None,
-               want_bytes: int = 0, total_bytes: int = 0,
                known_names: Optional[Dict[Tuple[str, ...], Set[str]]] = None
                ) -> Report:
     """Upload new and missing files. Writes nothing when dry_run.
@@ -352,8 +385,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         # fetch_files sets its own progress labels.
         fetched, fetch_failures = gh.fetch_files(
             src, wanted, workdir, transport, commit,
-            on_progress=on_progress, threshold=threshold,
-            want_bytes=want_bytes, total_bytes=total_bytes,
+            on_progress=on_progress, fallback_at=fallback_at,
         )
         report.failures.extend(fetch_failures)
 
@@ -417,7 +449,7 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          exclude: Sequence[str] = (),
          dry_run: bool = True,
          on_progress: Optional[Progress] = None,
-         threshold: int = gh.TARBALL_THRESHOLD,
+         fallback_at: int = gh.ARCHIVE_FALLBACK_MIN,
          settle_wait: Optional[float] = None,
          verify_placed: bool = True,
          commit: Optional[str] = None) -> Tuple[PL.Plan, Report]:
@@ -448,11 +480,13 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     plan.commit = commit
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
                         transport, commit, on_progress=on_progress,
-                        dry_run=dry_run, threshold=threshold,
+                        dry_run=dry_run, fallback_at=fallback_at,
                         settle_wait=settle_wait, known_lineages=drift.present,
-                        known_names=drift.names,
-                        want_bytes=getattr(tree, "bytes_for", lambda _p: 0)(selected),
-                        total_bytes=getattr(tree, "total_bytes", 0))
+                        known_names=drift.names)
+    refused = {p for p, _n in report.occupied}
+    report.download_bytes = tree.bytes_for(
+        [p for p in plan.to_place if p not in refused])
+    report.check = drift if drift.files is not None else None
 
     # Record that the sync ran, even if nothing was uploaded. Skipped for
     # previews, cancelled runs (they raise before here) and blocked runs.

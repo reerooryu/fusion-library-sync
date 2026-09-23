@@ -7,4 +7,4 @@ Named detent_core, not core, because all Fusion add-ins share one Python, and
 a generic name would clash with other add-ins.
 """
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"

@@ -1,7 +1,8 @@
 """GitHub: resolve a ref, read the file tree, download files.
 
-The transport is passed in so tests run without a network. Large syncs
-download one archive; small ones download files individually.
+The transport is passed in so tests run without a network. Files are
+downloaded individually, several at once. The whole-repo archive is only a
+fallback.
 """
 
 from dataclasses import dataclass
@@ -20,13 +21,13 @@ API = "https://api.github.com"
 RAW = "https://raw.githubusercontent.com"
 CODELOAD = "https://codeload.github.com"
 
-# The archive is always the whole repo, so only use it for 100+ files that
-# make up at least half the repo by size.
-TARBALL_THRESHOLD = 100
-TARBALL_FRACTION = 0.5
+# Files downloaded at once. Measured on a home connection (23 Sep 2026):
+# 16 at once ran at 117 Mbit/s; the single archive stream at 10 Mbit/s.
+DOWNLOAD_WORKERS = 16
 
-# Parallel downloads for the per-file path. Kept low for home connections.
-DOWNLOAD_WORKERS = 8
+# If at least this many downloads fail (for example GitHub rate-limiting),
+# get the whole-repo archive and take the failed files from it.
+ARCHIVE_FALLBACK_MIN = 100
 
 # Statuses worth retrying. A 404 or 403 won't change.
 RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
@@ -190,20 +191,6 @@ def tarball_url(src: Source, commit: Optional[str] = None) -> str:
     return f"{CODELOAD}/{src.repo}/tar.gz/{commit or src.ref}"
 
 
-def should_use_tarball(n_files: int, threshold: int = TARBALL_THRESHOLD,
-                       want_bytes: int = 0, total_bytes: int = 0) -> bool:
-    """Download the whole archive, or file by file?
-
-    Archive only if there are enough files and they make up most of the repo.
-    Without sizes, fall back to counting files.
-    """
-    if n_files < threshold:
-        return False
-    if want_bytes and total_bytes:
-        return want_bytes >= total_bytes * TARBALL_FRACTION
-    return True
-
-
 def human_bytes(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if abs(n) < 1024 or unit == "GB":
@@ -277,45 +264,29 @@ def extract_tarball(data: bytes, dest: str,
 def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 transport: Transport, commit: Optional[str] = None,
                 on_progress: Optional[Callable[[int, int, str], None]] = None,
-                threshold: int = TARBALL_THRESHOLD,
-                want_bytes: int = 0, total_bytes: int = 0,
-                workers: int = 0) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
-    """Returns (fetched, failures). One failed file doesn't stop the rest."""
+                workers: int = 0,
+                fallback_at: int = ARCHIVE_FALLBACK_MIN
+                ) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
+    """Download files, several at once. Returns (fetched, failures).
+
+    One failed file doesn't stop the rest. If `fallback_at` or more fail, the
+    failed ones are taken from the whole-repo archive instead. 0 turns the
+    fallback off.
+    """
     paths = list(paths)
+    fetched, failures = _fetch_each(src, paths, dest, transport, commit,
+                                    on_progress, workers)
+    if fallback_at and len(failures) >= fallback_at:
+        got = _fetch_from_archive(src, [p for p, _m in failures], dest,
+                                  transport, commit, on_progress)
+        fetched.update(got)
+        failures = [(p, m) for p, m in failures if p not in got]
+    return fetched, failures
+
+
+def _fetch_each(src, paths, dest, transport, commit, on_progress, workers):
     fetched: Dict[str, str] = {}
     failures: List[Tuple[str, str]] = []
-
-    if should_use_tarball(len(paths), threshold, want_bytes, total_bytes):
-        def chunk(got, total):
-            # Progress by bytes, scaled to the file count.
-            if not on_progress:
-                return None
-            if total:
-                i = len(paths) * got // total
-                # No "%": Detent.py escapes it for Fusion's progress dialog.
-                label = (f"Downloading {human_bytes(got)} "
-                         f"of {human_bytes(total)}")
-            else:
-                i, label = 0, f"Downloading {human_bytes(got)}"
-            return on_progress(i, len(paths), label)
-        try:
-            data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
-        except Cancelled:
-            raise
-        except Exception as exc:                     # noqa: BLE001
-            # Big archives often time out. Fall back to downloading each file.
-            if on_progress:
-                on_progress(0, len(paths),
-                            f"archive failed ({type(exc).__name__}), "
-                            "fetching files individually")
-        else:
-            fetched = extract_tarball(data, dest, wanted=paths)
-            for p in paths:
-                if p not in fetched:
-                    failures.append((p, "not present in tarball"))
-            if on_progress:
-                on_progress(len(fetched), len(paths), "tarball")
-            return fetched, failures
 
     def one(path):
         blob = fetch_blob(src, path, transport, commit)
@@ -324,6 +295,9 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
         with open(out, "wb") as w:
             w.write(blob)
         return out
+
+    if not paths:
+        return fetched, failures
 
     # Downloads run in threads. Progress and cancel stay on this thread, which
     # is the only one allowed to touch Fusion.
@@ -348,5 +322,32 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
             for f in pending:
                 f.cancel()
             raise
-
     return fetched, failures
+
+
+def _fetch_from_archive(src, paths, dest, transport, commit,
+                        on_progress) -> Dict[str, str]:
+    """Take `paths` from the whole-repo archive. Returns what it found; if the
+    archive itself fails, returns nothing and the original failures stand."""
+    n = len(paths)
+    if on_progress:
+        on_progress(0, n, f"{n} downloads failed, getting the full archive")
+
+    def chunk(got, total):
+        # Progress by bytes, scaled to the file count.
+        if not on_progress:
+            return None
+        # No "%": Detent.py escapes it for Fusion's progress dialog.
+        if total:
+            return on_progress(n * got // total, n,
+                               f"Downloading archive {human_bytes(got)} "
+                               f"of {human_bytes(total)}")
+        return on_progress(0, n, f"Downloading archive {human_bytes(got)}")
+
+    try:
+        data = transport.get_bytes(tarball_url(src, commit), on_chunk=chunk)
+    except Cancelled:
+        raise
+    except Exception:                                # noqa: BLE001
+        return {}
+    return extract_tarball(data, dest, wanted=paths)

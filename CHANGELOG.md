@@ -2,7 +2,20 @@
 
 Use the latest release. Older releases are kept for reference and marked broken.
 
+## v0.4.2 — Faster downloads and a folder check
+
+- Downloads files 16 at a time instead of as one archive. On a home
+  connection the full library took about 3 minutes instead of about 30.
+- If a lot of downloads fail, for example because GitHub is limiting
+  requests, Detent downloads the archive instead.
+- Preview checks the folder: how many files are in it, any duplicate names,
+  and any files Detent doesn't know about.
+- Preview and the upload prompt show how much will be downloaded.
+- The upload prompt no longer says Fusion will stop responding.
+
 ## v0.4.1 — Safer syncing and Windows install
+
+**Broken.**
 
 - Won't upload a file where one with the same name is already in the folder.
   Before, syncing into a folder that already had the library made duplicates.

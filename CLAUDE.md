@@ -56,6 +56,7 @@ One line per commit, oldest first.
 - `fix(ui): include re-placed files in the upload confirmation`
 - `docs: rewrite README, changelog and CLAUDE.md in plain language`
 - `docs: shorten code comments and docstrings`
+- `feat(sync): parallel downloads, folder check and download size` — v0.4.2.
 
 ## Push
 

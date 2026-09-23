@@ -61,8 +61,9 @@ Pick the one that fits you.
 5. **Action**: Sync now → **OK**
 6. Check the list it shows you, then click **Yes**.
 
-The whole library is about 1,200 files and 2.2 GB. It takes a while, and Fusion
-freezes during the download. To try a small part first, see
+The whole library is about 1,200 files and 2 GB. The download takes a few
+minutes on a fast connection; putting the files into Fusion takes longer. Keep
+Fusion open until it finishes. To try a small part first, see
 [Sync part of the library](#sync-part-of-the-library).
 
 ### I already have the library
@@ -97,8 +98,21 @@ If Detent ever says `STALE MODULE`, restart Fusion.
 | Action | What it does | When to use it |
 |---|---|---|
 | **Sync now** | Shows what's new, asks, then uploads it | To get the library, or a new release |
-| **Preview changes** | Shows what Sync now would do. Changes nothing. | To check for updates, or check nothing was deleted |
+| **Preview changes** | Shows what Sync now would do, and checks the folder. Changes nothing. | To check for updates, or check your library is healthy |
 | **Adopt existing library** | Records the files you already have. Uploads nothing. | Once, if you already have the library |
+
+## Checking your library
+
+Preview ends with a line like this:
+
+```
+Folder check: 1198 file(s), 0 duplicate name(s), 0 not tracked by Detent
+```
+
+- **Duplicate names** are two files with the same name in one folder. Fusion
+  allows this without warning. Any found are listed so you can remove one.
+- **Not tracked by Detent** are files in the folder that Detent didn't place
+  or adopt, such as parts you added yourself. That's fine, just good to know.
 
 ## What it won't do
 

@@ -11,7 +11,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -36,6 +36,7 @@ CMD_NAME = "Sync Library"
 CMD_TIP = ("Sync a Git-hosted CAD library into this project. Downloads only "
            "what changed. Never modifies a file it has already placed.")
 PANEL_ID = "SolidScriptsAddinsPanel"    # Utilities tab > ADD-INS
+LARGE_SYNC = 100                        # files; above this, suggest a smaller test first
 
 CONFIG_PATH = os.path.join(_HERE, "config.json")
 STATE_DIR = os.path.join(_HERE, "state")
@@ -281,7 +282,11 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     finally:
         _done(progress)
 
-    summary = _plan_text(plan, source) if not plan.is_empty else "Everything is up to date."
+    summary = (_plan_text(plan, source, preview) if not plan.is_empty
+               else "Everything is up to date.")
+    check = S.check_lines(preview.check)
+    if check:
+        summary += "\n\n" + "\n".join(check)
     if preview.occupied:
         # Warn now, before the upload. These are counted in the plan above.
         summary += ("\n\nNot uploadable - a file of that name is already in "
@@ -297,13 +302,12 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     n = S.upload_count(plan, preview)
     if n:
         warn = ""
-        if n >= gh.TARBALL_THRESHOLD:
-            warn = ("\n\nThis is a full first sync. It downloads the whole "
-                    "repository in one go and Fusion will be UNRESPONSIVE for "
-                    "most of it.\n\nConsider narrowing 'include' in config.json "
-                    "and syncing a subset first.")
+        if n >= LARGE_SYNC:
+            warn = ("\n\nThis is a big sync. Keep Fusion open until it "
+                    "finishes. To try a few files first, narrow 'include' in "
+                    "config.json.")
         answer = ui.messageBox(
-            f"{summary}\n\nUpload {gh.estimate(n)}?{warn}",
+            f"{summary}\n\nUpload {gh.estimate(n, preview.download_bytes)}?{warn}",
             "Detent", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
         if answer != adsk.core.DialogResults.DialogYes:
             return
@@ -383,7 +387,7 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
                   "Detent")
 
 
-def _plan_text(plan, source) -> str:
+def _plan_text(plan, source, preview) -> str:
     at = f" ({plan.commit[:7]})" if plan.commit else ""
     lines = [f"{source.repo} @ {source.ref}{at}", ""]
     lines.append(f"  + {len(plan.add):5d}  to add")
@@ -409,9 +413,8 @@ def _plan_text(plan, source) -> str:
 
     place = plan.to_place
     if place:
-        lines += ["", f"Estimated: {gh.estimate(len(place))}"]
-        if len(place) >= gh.TARBALL_THRESHOLD:
-            lines.append("Full first sync - downloads the entire repository.")
+        lines += ["", "Estimated: " + gh.estimate(S.upload_count(plan, preview),
+                                                 preview.download_bytes)]
         lines += ["", "First few:"]
         lines += [f"    {_short(p)}" for p in place[:8]]
         if len(place) > 8:
