@@ -75,6 +75,15 @@ One line per commit, oldest first.
 - `perf(github): weigh the tarball decision and fetch files in parallel` —
   blob sizes are kept; a partial selection no longer pulls 2.2 GB.
 - `fix(ui): close the progress dialog, default to Sync now, tidy the tooltip`.
+- `fix(sync): close five gaps on the add path` — an add never checked its
+  Data Panel name was free, so a first sync into a hand-touched folder made a
+  duplicate and reported a clean run; editing the Folder box saved on OK
+  (Preview included) and re-placed the whole library into the new one; preview
+  and write each resolved `ref` separately, so a moving branch meant approving
+  one file list and uploading another; a `subpath` filter rebuilt the tree as
+  a plain dict and lost `Tree.sizes`; and the progress bar was sized by `add`,
+  leaving every drift recovery pinned at full. `detect_drift` now returns a
+  `Drift` carrying the folder name map, and `Report.occupied` is the refusal.
 
 ## Push
 

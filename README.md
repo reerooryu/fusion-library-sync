@@ -70,8 +70,8 @@ want — a library should move when you decide it moves.
 
 ---
 
-**Status:** v0.4.0. Additive sync, verified against a live Fusion project.
-130 tests.
+**Status:** v0.4.1. Additive sync, verified against a live Fusion project.
+152 tests.
 
 ## Why
 

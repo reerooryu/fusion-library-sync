@@ -178,7 +178,7 @@ def resolve_commit(src: Source, transport: Transport) -> str:
 
 
 def fetch_tree(src: Source, transport: Transport,
-               commit: Optional[str] = None) -> Dict[str, str]:
+               commit: Optional[str] = None) -> Tree:
     """One request for every path and blob SHA in the repo."""
     url = (f"{API}/repos/{src.repo}/git/trees/"
            f"{urllib.parse.quote(commit or src.ref)}?recursive=1")
@@ -186,7 +186,12 @@ def fetch_tree(src: Source, transport: Transport,
     tree = parse_tree(payload)
     if src.subpath:
         prefix = src.subpath.strip("/") + "/"
-        tree = {p: s for p, s in tree.items() if p.startswith(prefix)}
+        kept = {p: s for p, s in tree.items() if p.startswith(prefix)}
+        # Rebuild a Tree, not a plain dict. A bare comprehension drops .sizes,
+        # and sync() then reads total_bytes as 0 through its getattr fallback -
+        # which sends should_use_tarball back to the file-count-only rule, the
+        # exact bug where a 150-file delta downloaded all 2.2 GB.
+        tree = Tree(kept, sizes={p: n for p, n in tree.sizes.items() if p in kept})
     return tree
 
 

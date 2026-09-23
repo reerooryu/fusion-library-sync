@@ -56,7 +56,8 @@ v0.3.3	feat: one-line installer, attached to every release	yes
 v0.3.4	fix(github): retry transient failures and fall back from the archive	yes
 v0.3.5	fix(ui): let fetch_files own its download progress label	yes
 v0.3.6	fix(sync): scale the settle deadline with the batch size	yes
-v0.4.0	HEAD	no
+v0.4.0	perf(github): weigh the tarball decision and fetch files in parallel	no
+v0.4.1	HEAD	no
 MAPEOF
 )
 

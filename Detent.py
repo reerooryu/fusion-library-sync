@@ -11,7 +11,7 @@ import traceback
 import adsk.core
 import adsk.fusion
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -34,6 +34,7 @@ from detent_core import VERSION as CORE_VERSION  # noqa: E402
 from detent_core import config as C            # noqa: E402
 from detent_core import github as gh           # noqa: E402
 from detent_core import sync as S              # noqa: E402
+from detent_core import manifest as M          # noqa: E402
 from detent_core import fusion_project as FP   # noqa: E402
 from detent_core.datapanel import FusionDataPanel  # noqa: E402
 
@@ -232,11 +233,26 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 ui.messageBox("Could not resolve a Fusion project.\n\n" + "\n".join(log))
                 return
 
-            source.folder_path = folder_path
-            cfg.save(CONFIG_PATH)
-
             os.makedirs(STATE_DIR, exist_ok=True)
             manifest_path = os.path.join(STATE_DIR, source.manifest_name)
+
+            # Moving a source to a new folder makes every manifest entry read
+            # as missing from the new location, and a sync then uploads a
+            # second copy of the whole library. Detent cannot delete the first.
+            # It used to happen on OK - including OK on Preview, which writes
+            # nothing else - from a one-character edit in a text box.
+            stranded = S.folder_change_impact(
+                M.Manifest.load(manifest_path), source.folder_path, folder_path)
+            if stranded and not _confirm_folder_change(
+                    ui, source.folder_path, folder_path, stranded):
+                return
+
+            source.folder_path = folder_path
+            # Persist only for an action that writes. A preview that changes
+            # nothing in Fusion should not rewrite the config either.
+            if not action.startswith("Preview"):
+                cfg.save(CONFIG_PATH)
+
             panel = FusionDataPanel(project, source.folders)
             src = gh.Source(source.repo, source.ref, source.subpath)
             transport = gh.UrllibTransport()
@@ -248,6 +264,20 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                          write=action.startswith("Sync"))
         except Exception:
             _fail(ui, "Detent failed")
+
+
+def _confirm_folder_change(ui, old_folder, new_folder, stranded) -> bool:
+    answer = ui.messageBox(
+        "The folder for this library has changed:\n\n"
+        f"    from   {old_folder or '(project root)'}\n"
+        f"    to     {new_folder or '(project root)'}\n\n"
+        f"{stranded} file(s) are recorded in the old folder. Detent will "
+        "treat every one of them as missing and upload a fresh copy into the "
+        "new folder. It cannot delete the old copies, so you would have "
+        "both.\n\nContinue?",
+        "Detent - folder change",
+        adsk.core.MessageBoxButtonTypes.YesNoButtonType)
+    return answer == adsk.core.DialogResults.DialogYes
 
 
 def _pick_project(name, log):
@@ -265,13 +295,21 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     progress.show("Detent", "Reading %v...", 0, 1)
     adsk.doEvents()
     try:
-        plan, _ = S.sync(src, manifest_path, panel, transport,
-                         source.include, source.exclude, dry_run=True,
-                         verify_placed=source.verify_placed)
+        plan, preview = S.sync(src, manifest_path, panel, transport,
+                               source.include, source.exclude, dry_run=True,
+                               verify_placed=source.verify_placed)
     finally:
         _done(progress)
 
     summary = _plan_text(plan, source) if not plan.is_empty else "Everything is up to date."
+    if preview.occupied:
+        # Say it here rather than after the upload. These are refused, and the
+        # count in the plan above still includes them.
+        summary += ("\n\nNot uploadable - a file of that name is already in "
+                    f"the folder and Detent did not put it there ({len(preview.occupied)}):\n")
+        summary += "\n".join(f"    {_short(p)}" for p, _n in preview.occupied[:5])
+        if len(preview.occupied) > 5:
+            summary += f"\n    ... and {len(preview.occupied) - 5} more"
     if not write:
         ui.messageBox(summary, "Detent - preview")
         return
@@ -296,7 +334,10 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
 
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = True
-    progress.show("Detent", "Starting...", 0, max(len(plan.add), 1))
+    # to_place, not add: a drift-recovery run has add == 0 and re-places
+    # dozens, and core reports progress against everything it will send. With
+    # add as the maximum the bar sat pinned full for the whole run.
+    progress.show("Detent", "Starting...", 0, max(len(plan.to_place), 1))
 
     def on_progress(i, total, label):
         # Returning False asks core to abort; it is how cancel reaches a
@@ -310,10 +351,14 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
         return True
 
     try:
+        # Pinned to the commit the preview above was computed from. `ref` is
+        # usually a branch, so resolving it a second time here could upload a
+        # different file list than the one the user just said yes to.
         _plan2, report = S.sync(src, manifest_path, panel, transport,
                                 source.include, source.exclude,
                                 dry_run=False, on_progress=on_progress,
-                                verify_placed=source.verify_placed)
+                                verify_placed=source.verify_placed,
+                                commit=plan.commit)
     except gh.Cancelled:
         _done(progress)
         ui.messageBox("Cancelled. Nothing was left half-written - rerun to "
@@ -368,7 +413,8 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
 
 
 def _plan_text(plan, source) -> str:
-    lines = [f"{source.repo} @ {source.ref}", ""]
+    at = f" ({plan.commit[:7]})" if plan.commit else ""
+    lines = [f"{source.repo} @ {source.ref}{at}", ""]
     lines.append(f"  + {len(plan.add):5d}  to add")
     if plan.change:
         lines.append(f"  ~ {len(plan.change):5d}  changed upstream (Phase 2)")
@@ -415,6 +461,13 @@ def _report_text(report, manifest_path) -> str:
         lines += [f"  {p}: {m}" for p, m in report.failures[:8]]
         if len(report.failures) > 8:
             lines.append(f"  ... and {len(report.failures) - 8} more")
+    if report.occupied:
+        lines += ["", "Not uploaded - that name is already in the folder and "
+                      "Detent did not place it:"]
+        lines += [f"  {_short(p)}" for p, _n in report.occupied[:8]]
+        if len(report.occupied) > 8:
+            lines.append(f"  ... and {len(report.occupied) - 8} more")
+        lines.append("  Adopt the library, or rename/remove the file that is there.")
     if report.conflicts:
         lines += ["", "Blocked - recorded as placed, gone, and the name is taken:"]
         lines += [f"  {_short(p)}" for p, _m in report.conflicts[:8]]

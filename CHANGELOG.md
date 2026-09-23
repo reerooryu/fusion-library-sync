@@ -25,9 +25,47 @@ folder, each on its own lineage, with no warning and no suffix.
 
 ---
 
-## v0.4.0 — Faster downloads, and a dialog that behaves
+## v0.4.1 — Five ways the add path could still bite
 
-**The current release.**
+**The current release.** Found by reading the code rather than by running it,
+which is why none of them had shown up in use.
+
+**An upload no longer lands on a name that is already taken.** The manifest
+only knows about files Detent placed. A file imported by hand is invisible to
+it, so a first sync into a folder somebody had already touched uploaded a
+second file of the same name — the exact duplicate the whole tool exists to
+prevent, reported as a clean run. The drift scan already listed every folder;
+its names are now checked before anything is fired, and a refused file is
+named in the preview as well as the summary. It is not recorded in the
+manifest, so it lands normally once the obstruction is cleared.
+
+**Changing the Folder box no longer re-places the library.** The new folder was
+written to `config.json` on OK — including OK on Preview, which otherwise
+writes nothing — and every recorded file then read as missing from the new
+location, so the next sync uploaded a second copy of the entire library into
+it. Detent cannot delete the first. The change is now explained and confirmed
+before anything happens, and Preview no longer persists it at all.
+
+**A preview and the sync it authorises are the same commit.** `ref` defaults to
+a branch, and each half resolved it separately, so a release landing between
+the two dialogs meant approving one file list and uploading another. The plan
+now carries the commit it was built from and the write is pinned to it. The
+commit also appears in the preview.
+
+**A source with a `subpath` keeps its blob sizes.** The filter rebuilt a plain
+dict, dropping the sizes that decide archive versus per-file — sending the
+tarball rule back to counting files, which is what used to pull all 2.2 GB for
+a small delta. Unreachable today because `subpath` is refused in config, and
+fixed before it is threaded through.
+
+**The progress bar is sized by everything the run will send.** It was sized by
+`add` alone, so every drift recovery — `add == 0`, dozens re-placed — sat
+pinned at full for the whole run. The counter also counted positions rather
+than sends, and could run past its own total.
+
+152 tests.
+
+## v0.4.0 — Faster downloads, and a dialog that behaves
 
 **Downloads no longer fetch the whole repository for part of it.** The codeload
 archive is always the entire repo, whatever was asked for, and the choice to

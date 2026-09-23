@@ -583,13 +583,25 @@ class TestAsyncUpload:
     def test_lineage_comes_from_our_own_upload_not_a_name_match(
             self, src, tmp_path):
         """Polling the future gives the identity of the file WE created, so a
-        same-named neighbour cannot be mistaken for ours."""
-        tree = {"A/Part.f3d": "sha"}
-        panel, tr = FakeDataPanel(), FakeTransport(tree)
-        mpath = str(tmp_path / "m.json")
+        same-named neighbour cannot be mistaken for ours.
 
-        folder = panel.ensure_folder(("A",))
-        decoy = panel.upload(folder, "/tmp/x", "Part")   # someone else's file
+        The decoy arrives AFTER the drift scan, which is the only way a
+        same-named stranger still reaches settle: a decoy already present is
+        refused by the add-path name guard and never uploaded at all.
+        """
+        tree = {"A/Part.f3d": "sha"}
+
+        class RaceIn(FakeDataPanel):
+            decoy = None
+
+            def begin_upload(self, folder_id, local_path, name):
+                if self.decoy is None:
+                    self.decoy = FakeDataPanel.upload(
+                        self, folder_id, local_path, name)
+                return super().begin_upload(folder_id, local_path, name)
+
+        panel, tr = RaceIn(), FakeTransport(tree)
+        mpath = str(tmp_path / "m.json")
 
         plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
 
@@ -597,7 +609,8 @@ class TestAsyncUpload:
         # future is consulted and its lineage wins.
         entry = Manifest.load(mpath).get("A/Part.f3d")
         assert entry is not None, "gave up instead of asking the future"
-        assert entry.lineage != decoy.lineage, "recorded the decoy"
+        assert panel.decoy is not None
+        assert entry.lineage != panel.decoy.lineage, "recorded the decoy"
         assert entry.state == PLACED
 
     def test_upload_failure_during_settle_is_reported(self, src, tmp_path):
@@ -954,25 +967,35 @@ class TestSettleNeverDropsAFiredUpload:
             return None                      # future never resolves
 
     def test_unresolvable_upload_does_not_duplicate_next_run(self, src, tmp_path):
+        """The stranger lands in the window between the drift scan and our
+        upload, so the add-path name guard cannot see it and settle is left
+        with two same-named files and a future that never resolves."""
         tree = {"A/Part.f3d": "sha1"}
-        panel = self.Ambiguous()
-        folder = panel.ensure_folder(("A",))
-        stranger = panel.upload(folder, "/tmp/x", "Part")   # a stranger sits there
+
+        class AmbiguousRace(FakeDataPanel):
+            stranger = None
+
+            def begin_upload(self, folder_id, local_path, name):
+                if self.stranger is None:
+                    self.stranger = FakeDataPanel.upload(
+                        self, folder_id, local_path, name)
+                return super().begin_upload(folder_id, local_path, name)
+
+            def poll_upload(self, handle):
+                return None                  # future never resolves
+
+        panel = AmbiguousRace()
         mpath = str(tmp_path / "m.json")
 
-        before = panel.total_files
         for _ in range(3):
             S.sync(src, mpath, panel, FakeTransport(tree), F3D,
                    dry_run=False, settle_wait=1.2)
 
-        assert panel.total_files == before + 1, (
-            "one upload total across three runs; the entry must survive")
-        # And it is ours, not the stranger's, even though the future never
-        # resolved - the pre-existing lineage is what rules the stranger out.
+        assert panel.total_files == 2, (
+            "one upload (plus the stranger) across three runs; "
+            "the entry must survive to stop the next one")
         entry = Manifest.load(mpath).get("A/Part.f3d")
-        assert entry.lineage not in {f.lineage
-                                     for f in panel.list_folder(folder)
-                                     if f.lineage == stranger.lineage}
+        assert entry is not None, "a fired upload must stay recorded"
 
     def test_upload_error_leaves_the_entry_inflight(self, src, tmp_path):
         class Erroring(FakeDataPanel):
@@ -1018,28 +1041,51 @@ class TestSettleNeverDropsAFiredUpload:
         assert panel.total_files == after_first, "re-uploaded an unresolved path"
 
 class TestSettleClaimsOnlyItsOwnUploads:
-    def test_a_file_that_was_already_there_is_never_claimed(self, src, tmp_path):
-        """One name hit is not proof of ownership. Identity is the lineage."""
-        class LateArrival(FakeDataPanel):
-            def begin_upload(self, folder, local_path, name):
-                return {"f": folder, "p": local_path, "n": name, "done": False}
-            def poll_upload(self, h):
-                if not h["done"]:
-                    h["done"] = True
-                    h["placed"] = FakeDataPanel.upload(self, h["f"], h["p"], h["n"])
-                return h["placed"]
-
+    def test_a_stranger_already_there_means_we_never_upload(self, src, tmp_path):
+        """One name hit is not proof of ownership. Identity is the lineage -
+        and now the add path refuses before anything is fired, rather than
+        uploading beside the stranger and sorting it out afterwards."""
         tree = {"A/Part.f3d": "sha1"}
-        panel = LateArrival()
+        panel = FakeDataPanel()
         folder = panel.ensure_folder(("A",))
         stranger = panel.upload(folder, "/tmp/x", "Part")
         mpath = str(tmp_path / "m.json")
 
-        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False,
-               settle_wait=3.0)
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                            dry_run=False, settle_wait=3.0)
 
-        entry = Manifest.load(mpath).get("A/Part.f3d")
-        assert entry.lineage != stranger.lineage, "recorded someone else's file"
+        assert rep.occupied == [("A/Part.f3d", "Part")]
+        assert rep.added == [] and not rep.ok
+        assert panel.list_folder(folder) == [stranger], "uploaded nothing"
+        assert panel.duplicates() == {}
+        assert Manifest.load(mpath).get("A/Part.f3d") is None
+
+    def test_settle_still_refuses_a_pre_existing_lineage(self, tmp_path):
+        """Defence in depth. The add guard stops these before an upload is
+        fired, but it is best-effort - a folder that could not be listed is
+        absent from its name map - so settle's pre_existing filter is still
+        the last line and must keep working."""
+        from detent_core import paths as P
+
+        panel = FakeDataPanel()
+        folder = panel.ensure_folder(("A",))
+        stranger = panel.upload(folder, "/tmp/x", "Part")
+        panel.poll_upload = lambda handle: None      # future never resolves
+
+        manifest = Manifest(source_id="s", repo="o/r")
+        manifest.mark_inflight("A/Part.f3d", placed_name="Part")
+        report = S.Report()
+        mpath = str(tmp_path / "m.json")
+
+        S.settle(manifest, panel, {"A/Part.f3d": "sha1"}, report, mpath,
+                 {"A/Part.f3d": {"placed": None, "polls": 0}}, None, 1.2,
+                 mapped_by_path={"A/Part.f3d": P.map_path("A/Part.f3d")},
+                 pre_existing={stranger.lineage})
+
+        entry = manifest.get("A/Part.f3d")
+        assert entry is not None and entry.state == INFLIGHT
+        assert entry.lineage is None, "claimed the stranger's lineage"
+        assert panel.list_folder(folder) == [stranger]
 
 
 class TestReconciledBlobIsReal:
@@ -1392,3 +1438,278 @@ class TestParallelDownloads:
             src, sorted(tree), str(tmp_path), FakeTransport(tree), "c0ffee",
             threshold=99999, workers=1)
         assert not failures and len(fetched) == 5
+
+
+class TestAddNeverLandsOnATakenName:
+    """The manifest only knows about files Detent placed. A file the user
+    imported by hand is invisible to it, and Fusion accepts a second one of
+    the same name without a word."""
+
+    def test_a_hand_placed_file_is_not_doubled(self, src, tmp_path):
+        tree = {"A/Part.f3d": "sha1"}
+        panel = FakeDataPanel()
+        folder = panel.ensure_folder(("A",))
+        theirs = panel.upload(folder, "/tmp/x", "Part")
+        mpath = str(tmp_path / "m.json")
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                           dry_run=False)
+
+        assert plan.add == ["A/Part.f3d"], "it really is new to the manifest"
+        assert rep.occupied == [("A/Part.f3d", "Part")]
+        assert rep.added == []
+        assert not rep.ok, "a refused file must not read as a clean run"
+        assert panel.list_folder(folder) == [theirs]
+        assert panel.duplicates() == {}, "this is the bug: two files named Part"
+
+    def test_the_rest_of_the_batch_still_lands(self, src, tmp_path):
+        tree = {"A/Part.f3d": "sha1", "A/Other.f3d": "sha2", "B/Third.f3d": "sha3"}
+        panel = FakeDataPanel()
+        panel.upload(panel.ensure_folder(("A",)), "/tmp/x", "Part")
+        mpath = str(tmp_path / "m.json")
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                            dry_run=False)
+
+        assert sorted(rep.added) == ["A/Other.f3d", "B/Third.f3d"]
+        assert rep.occupied == [("A/Part.f3d", "Part")]
+        assert panel.duplicates() == {}
+
+    def test_a_refused_file_is_not_recorded_so_it_can_land_later(self, src, tmp_path):
+        """Nothing was uploaded, so nothing may be written to the manifest -
+        otherwise the file is locked out for good once the obstruction is
+        cleared."""
+        tree = {"A/Part.f3d": "sha1"}
+        panel = FakeDataPanel()
+        folder = panel.ensure_folder(("A",))
+        theirs = panel.upload(folder, "/tmp/x", "Part")
+        mpath = str(tmp_path / "m.json")
+
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False)
+        assert Manifest.load(mpath).get("A/Part.f3d") is None
+
+        panel.contents[folder] = []          # the obstruction is removed
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                            dry_run=False)
+
+        assert rep.added == ["A/Part.f3d"]
+        assert rep.occupied == []
+        assert panel.total_files == 1
+        assert theirs is not None
+
+    def test_preview_says_so_before_the_user_commits(self, src, tmp_path):
+        tree = {"A/Part.f3d": "sha1"}
+        panel = FakeDataPanel()
+        panel.upload(panel.ensure_folder(("A",)), "/tmp/x", "Part")
+
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel,
+                            FakeTransport(tree), F3D, dry_run=True)
+
+        assert rep.occupied == [("A/Part.f3d", "Part")]
+        assert panel.total_files == 1, "preview wrote nothing"
+
+    def test_a_re_placement_is_not_refused_by_its_own_name(self, small_tree, src,
+                                                           tmp_path):
+        """Drift recovery must keep working. Re-places are routed past this
+        guard because detect_drift has already checked their names."""
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        for fid in panel.contents:
+            panel.contents[fid] = []
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False)
+
+        assert rep.occupied == []
+        assert len(rep.replaced) == len(small_tree)
+        assert panel.duplicates() == {}
+
+    def test_an_unlistable_folder_does_not_block_a_first_sync(self, src, tmp_path):
+        """Best effort: a panel that cannot be read must not stop a legitimate
+        sync. settle is the backstop for what this guard cannot see."""
+        tree = {"A/Part.f3d": "sha1"}
+
+        class Blind(FakeDataPanel):
+            def scan(self):
+                raise RuntimeError("Data Panel unreachable")
+            def list_folder(self, folder_id):
+                raise RuntimeError("Data Panel unreachable")
+
+        panel = Blind()
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel,
+                            FakeTransport(tree), F3D, dry_run=False,
+                            settle_wait=1.2)
+
+        assert rep.occupied == [], "refused a file it could not prove was taken"
+        assert panel.uploads == ["Part"], "the upload was still fired"
+
+
+class TestFolderChangeIsVisible:
+    """Pointing a source at a different folder strands every recorded file:
+    they all read as missing from the new location and a sync uploads a
+    second copy of the library. Detent cannot delete the first."""
+
+    def test_no_change_is_no_impact(self):
+        m = Manifest(source_id="s", repo="o/r")
+        m.record("A/x.f3d", "sha", "urn:1")
+        assert S.folder_change_impact(m, "VEX CAD Library", "VEX CAD Library") == 0
+
+    def test_only_the_separators_differ(self):
+        m = Manifest(source_id="s", repo="o/r")
+        m.record("A/x.f3d", "sha", "urn:1")
+        assert S.folder_change_impact(m, "/VEX/Lib/", "VEX/Lib") == 0
+
+    def test_a_real_change_reports_every_recorded_file(self):
+        m = Manifest(source_id="s", repo="o/r")
+        for i in range(45):
+            m.record(f"A/x{i}.f3d", "sha", f"urn:{i}")
+        assert S.folder_change_impact(m, "VEX CAD Library", "VEX CAD") == 45
+
+    def test_nothing_recorded_yet_is_harmless(self):
+        assert S.folder_change_impact(None, "A", "B") == 0
+        assert S.folder_change_impact(Manifest(source_id="s", repo="o/r"), "A", "B") == 0
+
+    def test_the_damage_it_describes_is_real(self, src, tmp_path):
+        """What the warning is warning about: same manifest, new folder."""
+        tree = {f"A/p{i}.f3d": f"s{i}" for i in range(9)}
+        mpath = str(tmp_path / "m.json")
+        old_folder, new_folder = FakeDataPanel(), FakeDataPanel()
+
+        S.sync(src, mpath, old_folder, FakeTransport(tree), F3D, dry_run=False)
+        _plan, rep = S.sync(src, mpath, new_folder, FakeTransport(tree), F3D,
+                            dry_run=False)
+
+        assert len(rep.replaced) == 9
+        assert old_folder.total_files == 9 and new_folder.total_files == 9
+        assert S.folder_change_impact(Manifest.load(mpath), "old", "new") == 9
+
+
+class TestPreviewAndWriteAgreeOnTheCommit:
+    """`ref` defaults to a branch. Resolving it twice lets the user approve
+    one file list and upload another."""
+
+    class Moving(FakeTransport):
+        def get_json(self, url):
+            if "/commits/" in url:
+                self.commit = self.commit + "x"      # the branch advanced
+            return super().get_json(url)
+
+    def test_the_plan_carries_the_commit_it_was_built_from(self, src, tmp_path):
+        tr = FakeTransport({"A/x.f3d": "s"}, commit="deadbeef")
+        plan, _ = S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(), tr,
+                         F3D, dry_run=True)
+        assert plan.commit == "deadbeef"
+
+    def test_a_pinned_write_does_not_re_resolve(self, src, tmp_path):
+        tr = self.Moving({"A/x.f3d": "s"}, commit="c0")
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+
+        plan, _ = S.sync(src, mpath, panel, tr, F3D, dry_run=True)
+        pinned = plan.commit
+        S.sync(src, mpath, panel, tr, F3D, dry_run=False, commit=pinned)
+
+        assert Manifest.load(mpath).synced_commit == pinned, (
+            "uploaded against a commit the user never saw")
+
+    def test_without_the_pin_the_two_runs_disagree(self, src, tmp_path):
+        """The bug, kept as evidence: unpinned, the write lands on a different
+        commit than the preview the user approved."""
+        tr = self.Moving({"A/x.f3d": "s"}, commit="c0")
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+
+        plan, _ = S.sync(src, mpath, panel, tr, F3D, dry_run=True)
+        S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+
+        assert Manifest.load(mpath).synced_commit != plan.commit
+
+    def test_a_pinned_run_makes_one_fewer_api_call(self, src, tmp_path):
+        tr = FakeTransport({"A/x.f3d": "s"})
+        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(), tr, F3D,
+               dry_run=True, commit="pinned")
+        assert tr.json_calls == 1, "resolve_commit was called despite the pin"
+
+
+class TestSubpathKeepsBlobSizes:
+    """A plain dict comprehension drops Tree.sizes, and sync() then reads
+    total_bytes as 0 - which sends should_use_tarball back to counting files
+    and pulls the whole 2.2 GB repository for a small delta."""
+
+    payload = {"truncated": False, "tree": [
+        {"path": "cad/a.f3d", "type": "blob", "sha": "s1", "size": 1000},
+        {"path": "cad/b.f3d", "type": "blob", "sha": "s2", "size": 2000},
+        {"path": "doc/c.md", "type": "blob", "sha": "s3", "size": 10},
+    ]}
+
+    class T:
+        def get_json(self, url):
+            return TestSubpathKeepsBlobSizes.payload, {}
+        def get_bytes(self, url, on_chunk=None):
+            return b""
+
+    def test_sizes_survive_the_subpath_filter(self):
+        tree = gh.fetch_tree(gh.Source("o/r", "main", "cad"), self.T())
+        assert isinstance(tree, gh.Tree)
+        assert tree.total_bytes == 3000, "the filter dropped .sizes"
+        assert tree.bytes_for(["cad/a.f3d"]) == 1000
+
+    def test_the_filter_still_filters(self):
+        tree = gh.fetch_tree(gh.Source("o/r", "main", "cad"), self.T())
+        assert sorted(tree) == ["cad/a.f3d", "cad/b.f3d"]
+        assert "doc/c.md" not in tree.sizes
+
+    def test_no_subpath_is_unaffected(self):
+        tree = gh.fetch_tree(gh.Source("o/r", "main"), self.T())
+        assert tree.total_bytes == 3010
+
+    def test_a_subpath_delta_does_not_reach_for_the_archive(self):
+        """The decision the sizes exist to inform."""
+        tree = gh.fetch_tree(gh.Source("o/r", "main", "cad"), self.T())
+        assert not gh.should_use_tarball(
+            150, threshold=100,
+            want_bytes=tree.bytes_for(["cad/a.f3d"]),
+            total_bytes=tree.total_bytes)
+
+
+class TestProgressNeverOvershoots:
+    """The dialog is created with a maximum and core reports against a total.
+    When they disagree the bar lies - it sat pinned full for every drift
+    recovery, which is the run users watch most anxiously."""
+
+    def test_the_addin_sizes_the_bar_by_everything_it_will_send(self):
+        """add is not the total. to_place is add + missing, and a re-placement
+        run has add == 0."""
+        import ast
+        import re
+        text = open(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "Detent.py"), encoding="utf-8").read()
+        ast.parse(text)                      # it still has to be valid Python
+        shows = re.findall(r"progress\.show\([^)]*\)", text)
+        upload_bar = [s for s in shows if "Starting" in s]
+        assert len(upload_bar) == 1, shows
+        assert "plan.to_place" in upload_bar[0], upload_bar[0]
+        assert "plan.add" not in upload_bar[0], upload_bar[0]
+
+    def test_the_counter_counts_sends_not_positions(self, src, tmp_path):
+        """Skipped entries must not run the counter past its own total."""
+        tree = {"A/Part.f3d": "s1", "A/Other.f3d": "s2", "A/Third.f3d": "s3"}
+        panel = FakeDataPanel()
+        panel.upload(panel.ensure_folder(("A",)), "/tmp/x", "Part")
+
+        seen = []
+
+        def on_progress(i, total, label):
+            if label.startswith("Sending"):
+                seen.append((i, total, label))
+            return True
+
+        S.sync(src, str(tmp_path / "m.json"), panel, FakeTransport(tree), F3D,
+               dry_run=False, on_progress=on_progress)
+
+        assert seen, "no upload progress was reported"
+        for i, total, label in seen:
+            assert 0 <= i < total, f"{label} reported {i} of {total}"
+        assert [t for _i, t, _l in seen] == [2, 2], (
+            "the total must exclude the file that was refused")
+        assert [lbl.split()[1] for _i, _t, lbl in seen] == ["1/2", "2/2"]

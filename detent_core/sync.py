@@ -38,11 +38,15 @@ class Report:
     collisions: Dict[str, List[str]] = field(default_factory=dict)
     unmappable: List[Tuple[str, str]] = field(default_factory=list)
     conflicts: List[Tuple[str, str]] = field(default_factory=list)
+    # A file we have never placed whose Data Panel name is already taken by
+    # something we did not put there. Refused, not failed: uploading would
+    # produce the duplicate this tool exists to prevent.
+    occupied: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return not (self.failures or self.collisions
-                    or self.unmappable or self.conflicts)
+                    or self.unmappable or self.conflicts or self.occupied)
 
     def lines(self) -> List[str]:
         rows = [
@@ -53,6 +57,7 @@ class Report:
             ("unverified", self.unverified, ""),
             ("reconciled", self.reconciled, ""),
             ("renamed", self.renamed, "(see detail)"),
+            ("NAME TAKEN", self.occupied, "(not uploaded)"),
             ("CONFLICTS", self.conflicts, "(needs a human)"),
             ("failed", self.failures, ""),
             ("COLLISIONS", self.collisions, "(blocked)"),
@@ -60,6 +65,38 @@ class Report:
         ]
         return [f"{label:17}{len(items):5d}  {note}".rstrip()
                 for label, items, note in rows if items or label == "added"]
+
+
+@dataclass
+class Drift:
+    """What one walk of the Data Panel found.
+
+    `present` and `names` are None when no walk happened - verify_placed off,
+    or the scan raised. None means "unknown", which callers must not read as
+    "empty": an empty name map would say every name is free.
+    """
+    missing: Set[str] = field(default_factory=set)
+    occupied: Dict[str, str] = field(default_factory=dict)
+    present: Optional[Set[str]] = None
+    names: Optional[Dict[Tuple[str, ...], Set[str]]] = None
+
+
+def folder_change_impact(manifest: Optional[Manifest],
+                         old_folder: str, new_folder: str) -> int:
+    """How many recorded files moving the target folder would strand.
+
+    The manifest records repo paths and lineages, never the folder they were
+    placed in - that lives in config - so this comparison can only be made by
+    the caller that holds both. Pointing a source at a new folder makes every
+    entry read as missing from the new location, and a sync then uploads a
+    second copy of the whole library. Detent cannot delete the first.
+    """
+    def parts(value: str) -> Tuple[str, ...]:
+        return tuple(p for p in (value or "").split("/") if p)
+
+    if parts(old_folder) == parts(new_folder):
+        return 0
+    return len(manifest.files) if manifest else 0
 
 
 def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
@@ -96,11 +133,10 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
                             "resolve by hand before syncing"))
 
 
-def detect_drift(manifest: Manifest, panel: DataPanel
-                 ) -> Tuple[Set[str], Dict[str, str], Set[str]]:
+def detect_drift(manifest: Manifest, panel: DataPanel) -> Drift:
     """Find manifest entries the Data Panel no longer backs up.
 
-    Returns (missing, occupied):
+    Returns a Drift:
       missing  - the lineage is gone and nothing holds its name. Safe to
                  re-place.
       occupied - the lineage is gone but something else now sits under that
@@ -108,6 +144,9 @@ def detect_drift(manifest: Manifest, panel: DataPanel
       present  - every lineage in the subtree right now. settle uses it to
                  tell our own uploads from files that were already there,
                  which saves a second walk of the same folders.
+      names    - the display names in each folder, from the same walk. A first
+                 placement checks it so an add never lands beside a file
+                 somebody imported by hand.
 
     Without this a deleted folder leaves Detent reporting 'up to date' over an
     empty shelf, which is the worst thing a sync tool can be confidently wrong
@@ -131,7 +170,9 @@ def detect_drift(manifest: Manifest, panel: DataPanel
     try:
         scan = panel.scan()
     except Exception:                                  # noqa: BLE001
-        return set(), {}, set()
+        # Unknown, not empty. Leaving present/names at None makes apply_plan
+        # take its own listing rather than trust a map it never built.
+        return Drift()
 
     present = {f.lineage for files in scan.values() for f in files}
     names = {folders: {f.name for f in files} for folders, files in scan.items()}
@@ -152,7 +193,7 @@ def detect_drift(manifest: Manifest, panel: DataPanel
             occupied[path] = want
         else:
             missing.add(path)
-    return missing, occupied, present
+    return Drift(missing=missing, occupied=occupied, present=present, names=names)
 
 
 def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
@@ -283,12 +324,18 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                threshold: int = gh.TARBALL_THRESHOLD,
                settle_wait: Optional[float] = None,
                known_lineages: Optional[Set[str]] = None,
-               want_bytes: int = 0, total_bytes: int = 0) -> Report:
+               want_bytes: int = 0, total_bytes: int = 0,
+               known_names: Optional[Dict[Tuple[str, ...], Set[str]]] = None
+               ) -> Report:
     """Additive half of a plan. Writes nothing when dry_run.
 
     known_lineages: every lineage already in the target subtree, from the
     drift scan sync() has just done. Passed on to settle so it can tell our
     uploads from files that were there first. None means take a listing here.
+
+    known_names: the display names already in each target folder, from the
+    same scan. A first placement is checked against it - see the guard in the
+    upload loop. None means take a listing here.
     """
     report = Report(
         skipped_changed=list(plan.change),
@@ -314,13 +361,58 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     if errors or collisions:
         return report
 
-    if dry_run or not mapped:
+    if not mapped:
+        return report
+
+    # Everything already in the target folders, before we add to them. settle
+    # uses the lineages to tell our uploads from files that were there first;
+    # the names stop a first placement landing on a name somebody else's file
+    # already holds.
+    #
+    # A preview reuses the drift scan for free. It does NOT take listings of
+    # its own - a preview that writes nothing should not cost a walk of the
+    # Data Panel - so with no scan to lean on it reports what it can see.
+    pre_existing: Set[str] = set(known_lineages or ())
+    taken: Dict[Tuple[str, ...], Set[str]] = dict(known_names or {})
+    if (known_lineages is None or known_names is None) and not dry_run:
+        for folders in {pp.folders for pp in mapped}:
+            try:
+                listing = panel.list_folder(panel.ensure_folder(folders))
+            except Exception:                         # noqa: BLE001
+                # Unreadable folder: we cannot prove ownership there, so
+                # settle falls back to the future - slower and correct.
+                continue
+            if known_lineages is None:
+                pre_existing.update(f.lineage for f in listing)
+            if known_names is None:
+                taken[folders] = {f.name for f in listing}
+
+    # A first placement must not land on a name that is already there. The
+    # manifest guard in the upload loop only knows about files WE placed; a
+    # file the user imported by hand is invisible to it, and Fusion accepts the
+    # second one without a word. That is the duplicate this whole tool exists
+    # to prevent, and until now the add path never looked.
+    #
+    # Re-placements are exempt: detect_drift has already routed an occupied
+    # name into plan.conflict, so it never reaches here.
+    #
+    # Best effort by design. A folder that could not be listed is absent from
+    # `taken` and its uploads proceed as they always did - a transient listing
+    # error must not block a legitimate first sync. settle is the backstop.
+    blocked = {pp.repo_path for pp in mapped
+               if pp.repo_path not in replace
+               and pp.name in taken.get(pp.folders, ())}
+    report.occupied = [(pp.repo_path, pp.name) for pp in mapped
+                       if pp.repo_path in blocked]
+
+    if dry_run:
         return report
 
     own_workdir = workdir is None
     workdir = workdir or tempfile.mkdtemp(prefix="detent-")
     try:
-        wanted = [pp.repo_path for pp in mapped]
+        # No point fetching bytes for a file we have already refused to place.
+        wanted = [pp.repo_path for pp in mapped if pp.repo_path not in blocked]
 
         # fetch_files owns its own labels: it is the only layer that knows
         # whether this is one archive or N files, and how far along it is.
@@ -332,23 +424,13 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         )
         report.failures.extend(fetch_failures)
 
-        # Everything already in the target folders, before we add to them.
-        # settle uses this to tell our uploads from files that were there
-        # first; without it a single name hit is claimed on sight.
-        pre_existing: Set[str] = set(known_lineages or ())
-        if known_lineages is None:
-            for folders in {pp.folders for pp in mapped}:
-                try:
-                    for f in panel.list_folder(panel.ensure_folder(folders)):
-                        pre_existing.add(f.lineage)
-                except Exception:                     # noqa: BLE001
-                    # Unreadable folder: we cannot prove ownership there, so
-                    # settle falls back to the future - slower and correct.
-                    pass
-
-        total = len(mapped)
+        total = len(wanted)
         handles: Dict[str, object] = {}
-        for i, pp in enumerate(mapped, 1):
+        # Counts files actually sent, not positions in `mapped`. Skipped
+        # entries - refused names, fetch failures, paths the manifest already
+        # owns - would otherwise run the counter past its own total.
+        sent = 0
+        for pp in mapped:
             local = fetched.get(pp.repo_path)
             if not local:
                 continue                      # already recorded as a fetch failure
@@ -360,13 +442,19 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                     and pp.repo_path not in replace):
                 continue
 
+            # Refused above: the name is already taken by a file we did not
+            # place. Already recorded in report.occupied.
+            if pp.repo_path in blocked:
+                continue
+
             folder = panel.ensure_folder(pp.folders)
             manifest.mark_inflight(pp.repo_path, placed_name=pp.name)
             manifest.save(manifest_path)
 
+            sent += 1
             if on_progress:
-                if on_progress(i - 1, total,
-                               f"Sending {i}/{total}  {pp.name}") is False:
+                if on_progress(sent - 1, total,
+                               f"Sending {sent}/{total}  {pp.name}") is False:
                     raise gh.Cancelled("cancelled during upload")
 
             try:
@@ -408,17 +496,24 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          on_progress: Optional[Progress] = None,
          threshold: int = gh.TARBALL_THRESHOLD,
          settle_wait: Optional[float] = None,
-         verify_placed: bool = True) -> Tuple[PL.Plan, Report]:
+         verify_placed: bool = True,
+         commit: Optional[str] = None) -> Tuple[PL.Plan, Report]:
     """One full cycle. Defaults to dry_run.
 
     verify_placed walks the Data Panel to check the manifest is still telling
     the truth. It costs one listing per folder; turning it off makes a sync
     trust its own bookkeeping, which is fine right up until someone deletes a
     folder by hand.
+
+    commit pins the run to a SHA instead of resolving `ref` again. A preview
+    and the write the user approves from it must be the same commit: `ref`
+    defaults to a branch, so between the two dialogs it can move, and the user
+    would approve one file list and upload another. The resolved SHA comes
+    back on Plan.commit for exactly that hand-off.
     """
     transport = transport or gh.UrllibTransport()
 
-    commit = gh.resolve_commit(src, transport)
+    commit = commit or gh.resolve_commit(src, transport)
     tree = gh.fetch_tree(src, transport, commit)
 
     manifest = Manifest.load(manifest_path) or Manifest(
@@ -431,14 +526,15 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
         reconcile_inflight(manifest, panel, pre, selected)
         manifest.save(manifest_path)
 
-    gone, occupied, present = (detect_drift(manifest, panel) if verify_placed
-                               else (set(), {}, None))
-    plan = PL.diff(selected, manifest, missing=gone)
-    plan.conflict = sorted(occupied)
+    drift = detect_drift(manifest, panel) if verify_placed else Drift()
+    plan = PL.diff(selected, manifest, missing=drift.missing)
+    plan.conflict = sorted(drift.occupied)
+    plan.commit = commit
     report = apply_plan(plan, selected, src, manifest, panel, manifest_path,
                         transport, commit, on_progress=on_progress,
                         dry_run=dry_run, threshold=threshold,
-                        settle_wait=settle_wait, known_lineages=present,
+                        settle_wait=settle_wait, known_lineages=drift.present,
+                        known_names=drift.names,
                         want_bytes=getattr(tree, "bytes_for", lambda _p: 0)(selected),
                         total_bytes=getattr(tree, "total_bytes", 0))
 

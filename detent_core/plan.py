@@ -59,6 +59,10 @@ class Plan:
     inflight: List[str] = field(default_factory=list)    # interrupted, needs reconcile
     missing: List[str] = field(default_factory=list)     # manifest says placed, panel disagrees
     conflict: List[str] = field(default_factory=list)    # gone, but its name is taken
+    # The commit this plan was computed against. A preview and the write that
+    # follows it must be the same commit, or the user approves one thing and
+    # uploads another - `ref` defaults to a branch, so it does move.
+    commit: Optional[str] = None
 
     @property
     def is_empty(self) -> bool:
