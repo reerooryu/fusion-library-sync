@@ -1,392 +1,144 @@
 # Changelog
 
-Detent syncs a Git-hosted CAD library into Fusion 360's Data Panel.
+Use the latest release. Older releases are kept for reference and marked broken.
 
-**Only v0.4.0 is fit to use.** Every earlier release is left published for the
-record and marked broken. Two defects affect all of them regardless of what
-else they fixed:
+## v0.4.1 — Safer syncing and Windows install
 
-- The Python package was called `core`. Every Fusion add-in shares one
-  interpreter and one `sys.path`, so that name collides with any other add-in
-  shipping the same obvious one.
-- Installing an update did nothing until Fusion itself was restarted. Fusion
-  re-executes the add-in's entry file on Stop/Run but keeps `sys.modules`, so
-  the entry point reloaded and the package did not.
+- Won't upload a file where one with the same name is already in the folder.
+  Before, syncing into a folder that already had the library made duplicates.
+- Asks before changing the Folder, since that uploads a second full copy.
+  Preview no longer saves the Folder to `config.json`.
+- Uploads the same GitHub version the preview showed you.
+- The "Upload N files?" prompt counts every file being sent, including deleted
+  files being put back. Before, putting back 45 deleted files didn't ask.
+- Parts that changed upstream are listed by name.
+- The progress bar is right when putting back deleted files.
+- Releases include `Detent.zip` for Windows, and the README has step-by-step
+  install instructions.
 
-Both are fixed in v0.3.1.
+## v0.4.0 — Downloads only what's needed; dialog fixes
 
-The invariant the whole project exists to hold:
+**Broken.**
 
-    Never upload a path already recorded in the manifest, unless the Data
-    Panel has been checked and the file it points at is gone.
+- A partial sync no longer downloads the whole 2.2 GB repo.
+- Files download 8 at a time.
+- The progress window closes when it's done.
+- Sync now is the default action.
+- The tooltip no longer starts with a blank line.
 
-Fusion does not enforce it. It will hold three files with one name in one
-folder, each on its own lineage, with no warning and no suffix.
+## v0.3.6 — Longer upload wait for big syncs
 
----
+**Broken.**
 
-## v0.4.1 — Five ways the add path could still bite
+- The time allowed for uploads to finish grows with the number of files. The
+  old 5-minute limit left the last file of a 1,198-file sync unconfirmed.
 
-**The current release.** Found by reading the code rather than by running it,
-which is why none of them had shown up in use.
+## v0.3.5 — Download progress that moves
 
-**An upload no longer lands on a name that is already taken.** The manifest
-only knows about files Detent placed. A file imported by hand is invisible to
-it, so a first sync into a folder somebody had already touched uploaded a
-second file of the same name — the exact duplicate the whole tool exists to
-prevent, reported as a clean run. The drift scan already listed every folder;
-its names are now checked before anything is fired, and a refused file is
-named in the preview as well as the summary. It is not recorded in the
-manifest, so it lands normally once the obstruction is cleared.
+**Broken.**
 
-**Changing the Folder box no longer re-places the library.** The new folder was
-written to `config.json` on OK — including OK on Preview, which otherwise
-writes nothing — and every recorded file then read as missing from the new
-location, so the next sync uploaded a second copy of the entire library into
-it. Detent cannot delete the first. The change is now explained and confirmed
-before anything happens, and Preview no longer persists it at all.
+- The progress bar tracks bytes downloaded. It used to sit at "0/1198" for the
+  whole download.
 
-**A preview and the sync it authorises are the same commit.** `ref` defaults to
-a branch, and each half resolved it separately, so a release landing between
-the two dialogs meant approving one file list and uploading another. The plan
-now carries the commit it was built from and the write is pinned to it. The
-commit also appears in the preview.
+## v0.3.4 — Retry when GitHub has a hiccup
 
-**A source with a `subpath` keeps its blob sizes.** The filter rebuilt a plain
-dict, dropping the sizes that decide archive versus per-file — sending the
-tarball rule back to counting files, which is what used to pull all 2.2 GB for
-a small delta. Unreachable today because `subpath` is refused in config, and
-fixed before it is threaded through.
+**Broken.**
 
-**The progress bar is sized by everything the run will send.** It was sized by
-`add` alone, so every drift recovery — `add == 0`, dozens re-placed — sat
-pinned at full for the whole run. The counter also counted positions rather
-than sends, and could run past its own total.
-
-**Windows has an install path.** Every release now carries `Detent.zip`
-alongside `Detent.tgz` — identical contents, but Explorer opens a zip with no
-extra tools and cannot open a `.tgz` at all. `install.sh` needs a bash shell,
-which most Windows users do not have, and fails on WSL besides. The README
-leads with click-by-click instructions for both platforms, then branches on
-whether you already have the library: adopt it, or start clean in a new folder.
-
-**The upload confirmation counts what will actually be sent.** It counted new
-files only, but a run also re-places files that went missing from the Data
-Panel — so a drift recovery of 45 files uploaded with no prompt at all, and a
-run of 5 new plus 45 missing asked to upload 5 and then sent 50.
-
-**Files that changed upstream are named, not just counted.** Detent cannot
-update them, so the list is the only useful thing it can give you. A count on
-its own left you with nothing to act on.
-
-160 tests.
-
-## v0.4.0 — Faster downloads, and a dialog that behaves
-
-**Downloads no longer fetch the whole repository for part of it.** The codeload
-archive is always the entire repo, whatever was asked for, and the choice to
-use it counted files but never weighed them — so a 150-file delta pulled all
-2.2 GB. GitHub returns a byte size per blob and Detent was discarding it;
-`parse_tree` now keeps it, and the archive is used only when the selection is
-at least half the repository. With sizes unknown the old file-count rule
-stands, because guessing low is the expensive mistake.
-
-**Individual files download eight at a time.** `urllib` opens a fresh
-connection per request, so this path was dominated by round trips rather than
-bandwidth. Nothing in the pool touches the Fusion API — that stays on the main
-thread, which also keeps progress and cancellation responsive.
-
-The full-library first sync still uses one archive; that case was never the
-slow one.
-
-UI:
-
-- The progress dialog closes before the summary appears. `hide()` only queues
-  the close, so without pumping the event loop the old window sat behind the
-  modal box and looked stuck.
-- **Sync now** is the default action. It still previews and asks before
-  writing anything.
-- The command tooltip no longer opens with a blank line.
-
-130 tests.
-
-## v0.3.6 — A settle deadline that fits the batch
-
-A full 1,198-file sync placed 1,197 and reported one failure: *upload
-unresolved after 300s*. Every upload is fired at once, so the last file to be
-processed waits behind all the others in Fusion's own queue, and a flat
-300-second deadline that suited 45 files does not suit 1,198.
-
-The deadline is now one second per fired upload, floored at 300. The settle
-loop polls and yields once a second, so a longer deadline costs nothing when
-everything resolves early.
-
-Nothing was lost in the reported run: a fired upload is never dropped from the
-manifest, so the unresolved file stayed `inflight` and the next sync
-reconciled it by looking in the folder — recording it if it landed, retrying
-it once if it did not.
-
-120 tests.
-
-## v0.3.5 — A download that shows it is moving
-
-A first sync sat on `Downloading 0/1198` with an empty bar for the whole 2.2 GB
-archive. The percentage was being computed correctly and then thrown away:
-`fetch_files` passed a label like `downloading 47%`, and `apply_plan` wrapped
-the callback and rewrote it as `Downloading {i}/{n}` with `i` hardcoded to 0 on
-the archive path — so the bar could not move either.
-
-`fetch_files` now owns its labels, because it is the only layer that knows
-whether this is one archive or N files. The bar tracks bytes scaled onto the
-file count, and the label reads `Downloading 412 MB of 2.2 GB (18%)`.
-
-This is the third instance of one shape: a value computed by the layer that
-knows it, discarded by a layer that does not.
-
-117 tests.
-
-## v0.3.4 — Survive a transient GitHub failure
-
-`urllib.error.HTTPError: HTTP Error 504: Gateway Timeout`, reported live. It
-came from `resolve_commit` — the first and smallest request a sync makes, one
-JSON GET for the ref's commit SHA. GitHub had a moment; Detent had no retry, so
-the run died before it read a single path.
-
-- Transient failures are retried four times with doubling backoff: 408, 425,
-  429 and the 5xx family, plus connection resets and read timeouts. A 404 or a
-  403 is never retried — it will not become a 200.
-- Giving up names the URL and the attempt count, rather than surfacing a raw
-  urllib traceback.
-- If the codeload archive fails anyway, the sync falls back to fetching files
-  individually. Much slower, but a 2.2 GB archive that GitHub builds on demand
-  is the most likely thing to time out, and finishing slowly beats not
-  finishing. Cancellation is still cancellation — it does not trigger the
-  fallback.
-
-114 tests.
+- Retries timeouts and server errors up to 4 times.
+- If downloading the whole repo fails, downloads the files one by one instead.
 
 ## v0.3.3 — One-line installer
 
-No behaviour change; v0.3.2's fixes with a way to install them.
+**Broken.**
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/reerooryu/fusion-library-sync/main/install.sh | bash
-```
+- Added `install.sh`. Each release includes `Detent.tgz`.
 
-Unpacks the latest release into Fusion's AddIns folder and leaves
-`config.json` and `state/` alone, so it upgrades an existing install as well
-as creating one. It also removes a `core/` directory left by any release
-before v0.3.1 — leaving it behind would let the stale package win on
-`sys.path`.
+## v0.3.2 — Fixes for duplicate uploads
 
-Every release now carries a `Detent.tgz` built from that tag's own tree, so a
-tag is installable on its own. The installer only ever fetches
-`releases/latest/download`, which resolves to the newest non-prerelease, so
-the releases marked broken are never what it hands anyone.
+**Broken.**
 
-## v0.3.2 — Uploads that cannot be duplicated by a failed settle
+- An upload that wasn't confirmed in time could be sent again on the next run.
+- An existing file with the same name could be mistaken for Detent's upload.
+- Files recovered after a crash showed as "changed" forever.
+- A blocked run no longer records itself as a completed sync.
+- `subpath` in config is now rejected.
 
-An audit found four defects, each reproduced before it was fixed and each
-mutation-checked after. Two of them could duplicate files.
+## v0.3.1 — Updates take effect without restarting Fusion
 
-- `settle()` dropped the manifest entry on three paths that run *after*
-  `begin_upload` has handed the file to Fusion. The file may already be in the
-  cloud; dropping the entry removes the only guard, so the next run treated
-  the path as new and sent it again — a folder holding three files named
-  `Part` after two syncs. The entry now stays `inflight` and
-  `reconcile_inflight` settles it by looking. Only an upload that provably
-  never started is dropped.
-- `settle()`'s fast path claimed a lineage on a single name match, which the
-  branch beside it explicitly refuses to do and which the manifest's own rule
-  forbids: identity is the lineage, never the display name. A file already in
-  the folder was recorded as ours while our upload sat beside it unrecorded.
-  The drift scan's lineages are now passed down so `settle` knows what was
-  there first — no extra listings.
-- `reconcile_inflight` recorded `blob=""` — never `None`, so never
-  "unverified", and never equal to a real SHA. Every file recovered from a
-  crash reported as changed upstream on every sync from then on.
-- A run blocked by a collision or an unmappable path uploaded nothing and then
-  stamped the manifest header anyway, claiming a check it had not made.
+**Broken.**
 
-`subpath` is now rejected in config. `paths.map_path` takes one and
-`adopt_existing` passes it, but `apply_plan`, `settle`, `reconcile_inflight`
-and `detect_drift` do not — so setting it made sync mirror the prefix into the
-Data Panel while adopt looked for it stripped, matched nothing, wrote an empty
-manifest, and duplicated the entire library on the next sync.
+- Reloads its code properly on Stop and Run.
+- Internal package renamed from `core` to `detent_core` so it can't clash with
+  other add-ins.
+- Warns if Fusion is still running an old copy of the code.
 
-109 tests.
+## v0.3.0 — Notices deleted files
 
-## v0.3.1 — Updates that actually take effect
+**Broken.**
 
-**Broken.** Two settle paths can duplicate a file.
+- Checks the folder against its records and re-uploads files deleted by hand.
+- If a different file now has that name, reports it instead of uploading.
 
-`AttributeError: 'SourceConfig' object has no attribute 'verify_placed'` — on
-a field sitting plainly in the installed file. The package on disk was right;
-the one in memory was not. Fusion had kept the previous version's modules.
+## v0.2.3 — Records when each sync ran
 
-- `Detent.py` drops the package from `sys.modules` before importing it, so
-  Stop/Run is now a real reload.
-- The package is renamed `core` → `detent_core`. This is load-bearing, not
-  tidying: without it, the purge above would delete another add-in's cached
-  modules out from under it.
-- `VERSION` is recorded in both the entry point and the package and compared.
-  A mismatch is reported in the dialog and again at load, instead of surfacing
-  later as a missing attribute on an arbitrary field.
+**Broken.**
 
-Anyone upgrading from an earlier version must restart Fusion once. The fix
-cannot unload modules that are already cached in the running process.
+- The manifest records the time, version and commit of every sync.
 
-103 tests.
+## v0.2.2 — Reports renamed files; Folder follows the library
 
-## v0.3.0 — Notices when files are deleted behind its back
+**Broken.**
 
-**Broken.** Ships as `core`; cannot be updated without restarting Fusion.
+- Reports when a file name had to be changed to fit Fusion.
+- The Folder box changes when you pick a different library.
 
-Empty a synced folder by hand and the previous releases reported "everything
-is up to date" — a confident all-clear over an empty shelf, which is the worst
-thing a sync tool can be wrong about. Only the manifest was ever consulted.
+## v0.2.1 — Faster upload confirmation
 
-- `detect_drift` walks the Data Panel once per run and compares it against the
-  manifest, matching on lineage rather than name.
-- Files whose lineage is gone and whose name is free are re-placed.
-- Files whose lineage is gone but whose **name is now taken** are never
-  re-placed. Something else is sitting there; a second copy beside it helps
-  nobody. Reported for a human instead.
-- A scan that raises returns nothing rather than everything. Read the other
-  way, one transient API error would re-upload an entire library on top of
-  itself. A false negative costs a stale row; a false positive costs
-  duplicates nobody can undo.
-- `verify_placed` in the source config turns it off. Defaults on.
+**Broken.**
 
-Verified live: a 45-file library emptied by hand reported `+0 to add / *45
-MISSING`, re-placed all 45, came back holding exactly 45, and returned to
-"up to date" on the next Preview.
+- Looks in the folder for uploaded files instead of waiting on Fusion's upload
+  status.
 
-## v0.2.3 — A manifest header that means something
+## v0.2.0 — Uploads rebuilt
 
-**Broken.** Blind to files deleted behind its back. Plus the two defects above.
+**Broken.**
 
-The per-file entries were always right; the header was stale three ways, each
-for a different reason.
+- Starts uploads and checks on them later, instead of waiting on each one.
+- Errors are written to `state/detent.log`.
 
-- `synced_at` was declared, serialised, read back on load, and assigned
-  nowhere. It was `null` in every manifest Detent had ever written.
-- `ref` was fixed at creation, because `Manifest.load(path) or Manifest(...,
-  ref=src.ref)` only applies the `ref=` on the branch that builds a fresh one.
-  Editing `config.json` left the manifest lying about which release it tracked.
-- `synced_commit` only advanced when a file happened to be uploaded, since it
-  was set below an early return taken whenever there was nothing to add. A
-  library that was up to date looked identical to one never checked.
+## v0.1.5 — Fewer calls to Fusion
 
-`Manifest.stamp()` now sets all three, from `sync()` rather than inside
-`apply_plan`, so every non-dry-run path reaches it. Preview still writes
-nothing, and a cancelled run does not claim to have checked anything.
+**Broken.**
 
-## v0.2.2 — Altered names are reported; the dialog follows its own dropdown
+- Lists each folder once per check instead of once per file.
 
-**Broken.** Stale manifest header, drift blindness, and the two defects above.
+## v0.1.4 — Doesn't wait on each upload
 
-- `Report.renamed` was declared, rendered by the add-in, and populated by
-  nothing. `paths.py` computes an alterations list whenever it trims a name
-  and the wire between them was never connected — the one case that must be
-  visible, since the manifest keys on the repo path and the Data Panel keys on
-  the display name.
-- With more than one source configured, the Folder box stayed on the first
-  library while the Library dropdown moved. Pressing OK wrote the first
-  library's folder path into the second, landing both in one folder.
-- Removed: `Plan.summary`, `Manifest.paths`, `Config.get`, `DataPanel.upload`
-  from the Protocol (the real panel never implemented it), and an
-  `except TypeError` in `fetch_files` that existed only because a test double
-  had a narrower signature than the transport it stood in for.
+**Broken.**
 
-## v0.2.1 — Scan the folder, not the future
+- Stopped waiting for each upload to finish, which made a 10-second upload take
+  minutes.
 
-**Broken.** Everything above, plus a manifest header that never updated.
+## v0.1.3 — Separate download and upload progress
 
-Second live probe:
+**Broken.**
 
-    first_appeared_s                   0.0    all five, immediately
-    dataFiles_updates_without_refresh  True   the collection is live
+- Progress shows whether it's downloading or uploading.
 
-A fired file is in `folder.dataFiles` the same tick, while `uploadState` takes
-18–50 s to leave Processing. v0.2.0 had optimised the wrong direction.
+## v0.1.2 — Correct file matching
 
-- `settle` scans the folder first — one live listing per folder, no refresh.
-- The future is consulted only for what the scan misses, and to disambiguate
-  when two files share a name; it knows which one we created.
+**Broken.**
 
-## v0.2.0 — Uploads rebuilt around futures, measured rather than assumed
+- `include` patterns match the way git does. Some files were being skipped.
 
-**Broken.** Waits 18–50 s per file for information available at t=0.
+## v0.1.1 — Doesn't freeze on the first sync
 
-First live probe against the Data Panel:
+**Broken.**
 
-    DataFolder has no refresh(). Calling it raises AttributeError, and a bare
-    'except Exception: pass' had been swallowing that on every listing since
-    v0.1 — six versions of a method that never ran.
-
-- `begin_upload` fires and returns the future; `poll_upload` resolves it.
-- Every `folder.refresh()` call removed.
-- Tracebacks are written to `state/detent.log`. The message box that ate the
-  exception line is why five versions were spent guessing.
-
-## v0.1.5 — Frugal settling
-
-**Broken.** Still calls a method that does not exist, under a bare except.
-
-`settle()` called `find_by_name` once per pending path per pass, each doing a
-round trip — roughly 42 full Data Panel listings per second on a 42-file sync.
-That is what was throwing. Now one listing per distinct folder per pass, with
-transient errors retried rather than ending the run.
-
-## v0.1.4 — Never block on uploadState
-
-**Broken.** Hammers the Data Panel hard enough to make it throw.
-
-Fusion completes an upload on the same event loop the caller is blocking, so
-waiting for `uploadState` made a ~10 s upload take 300 s and time out — while
-the file had already landed. Observed live: the dialog read
-`Uploading 3/42 (228s)` with six files already in the Data Panel.
-
-Estimate drops from 12 s to 2 s per file, which is what the work costs when
-nobody is blocking it.
-
-## v0.1.3 — Progress that says which phase it is in
-
-**Broken.** A ten-second upload takes 228 seconds.
-
-One bar served both download and upload, so finishing 43 downloads showed
-"43 of 43" while zero files had been uploaded — minutes of work still to go,
-looking complete and then frozen. Labels now distinguish the phases, and the
-bar announces an upload before starting it rather than after finishing it.
-
-## v0.1.2 — Git-style globs, and the real file count
-
-**Broken.** Progress bar reports completion at the halfway point.
-
-- Globs were `fnmatch`-based, so `*` crossed `/` and `**/` required at least
-  one directory. `Hardware/Screws/**/*.f3d` silently skipped the two files
-  sitting directly in that folder — 43 matched where 45 should have. Now
-  compiled to a regex with git semantics.
-- The corpus has **1,198** `.f3d` files, not 1,193. The original count came
-  from an extension histogram that split on the last dot, so the five U+201D
-  filenames landed in their own bucket and were dropped.
-
-## v0.1.1 — Does not freeze Fusion on a first sync
-
-**Broken.** Under-matches include globs, so syncs are quietly incomplete.
-
-A 1,198-file sync took the tarball path and blocked Fusion's UI thread on a
-single 2.2 GB read — no progress, no working cancel, and a confirm dialog that
-said "upload 1198 files" while meaning "2.2 GB and about four hours". Now
-streamed in 1 MB chunks with a cancel that cancels and a confirm dialog that
-states bytes and time.
+- Downloads in chunks, with a Cancel button that works.
 
 ## v0.1.0 — First release
 
-**Broken. Do not use.** Freezes Fusion for hours on a first sync of any real
-library, with no progress and no working cancel.
+**Broken.**
 
-Sync Library under Utilities → ADD-INS. Preview always runs before any write,
-and writing needs a second explicit confirmation. JSON config, VEX-CAD
-preconfigured, and an Adopt mode for a library already imported by hand.
+- Sync Library command, JSON config, VEX CAD preset, and Adopt.

@@ -1,111 +1,69 @@
 # CLAUDE.md
 
-Working notes for Detent. Read before changing anything.
+Notes for working on Detent. Read before changing anything.
 
 ## Rules
 
-- The invariant, above all else: never upload a path already recorded in the
-  manifest, unless the Data Panel has been checked and the file it points at
-  is gone. Fusion does not enforce this and will hold three files of one name
-  in one folder, each on its own lineage, silently.
-- Identity is the lineage URN. Never the display name.
-- Measure Fusion's API; do not assume it. Every Fusion-side bug in this project
-  came from assuming. Write a probe script and read the numbers.
-- Fixes carry a test that fails when the fix is reverted. Mutate the fix and
-  confirm the suite catches it.
-- Commits: conventional, imperative, scoped. Author and committer are
-  `reerooryu <reerooryu@users.noreply.github.com>`. No other trailers.
-- `CHANGELOG.md` is the single source for release notes; `scripts/publish.sh`
-  reads each release body from it.
+- Never upload a file the manifest says is placed, unless the Data Panel shows
+  it's gone. Fusion allows two files with the same name and doesn't warn.
+- Track files by lineage URN, never by name.
+- Check Fusion API behaviour with a probe script before relying on it.
+- Every fix needs a test that fails without it. Revert the fix to confirm.
+- Commits: conventional commits with plain, technical names. Author and
+  committer are `reerooryu <reerooryu@users.noreply.github.com>`. No trailers,
+  no other authors, no personal emails, no session links.
+- Release notes live in `CHANGELOG.md`; `scripts/publish.sh` reads them.
+- Write docs in plain language. Short sentences, no filler.
 
 ## Log
 
 One line per commit, oldest first.
 
-- `feat: phase 1 core` — manifest, tree/manifest diff, repo-path to Data Panel
-  mapping.
-- `feat: github source, data panel interface, sync orchestration` — injected
-  transport, Data Panel behind a Protocol, plan/apply cycle.
-- `feat: v0.1 add-in` — Fusion command, JSON config, adopt mode.
-- `refactor: trim dead code and narration` — removed unreferenced code.
-- `chore: rename to Detent` — entry points renamed to match the add-in folder.
-- `fix: do not freeze Fusion on a first sync` — streamed the tarball in 1 MB
-  chunks with a working cancel; a 2.2 GB read had blocked the UI thread.
-- `fix: git-style globs, correct file count, readable preview` — replaced
-  `fnmatch`; corrected the corpus count to 1,198.
-- `fix: progress must say which phase it is in` — separated download and
-  upload phases.
-- `fix: never block on uploadState` — uploads are fired, not awaited; blocking
-  cost 228 s per file.
-- `fix: settle must be frugal and survive a flaky Data Panel` — one listing per
-  folder per pass.
-- `fix: rebuild uploads around futures, measured not assumed` — first live
-  probe; `DataFolder.refresh()` does not exist.
-- `test: cover the Fusion upload state machine` — upload state transitions.
-- `fix: scan the folder first, poll the future only as fallback` — second
-  probe; files appear at t=0 while `uploadState` takes 18–50 s.
-- `fix: report altered names, and follow the library dropdown` — populated
-  `Report.renamed`; bound the folder input to the selected source.
-- `fix: stamp the manifest header on every sync` — `synced_at`, `ref` and
-  `synced_commit` were each stale for a different reason.
-- `feat: detect files the manifest claims and the Data Panel does not have` —
-  drift detection, guarded against re-placing over an occupied name.
-- `fix: reload the package on Run, and stop squatting on the name "core"` —
-  Fusion keeps `sys.modules` across Stop/Run; package renamed `detent_core`.
-- `docs: changelog for every release, and a script to publish them` —
-  `CHANGELOG.md` plus `scripts/publish.sh`.
-- `docs: rename v0.1 to v0.1.0 and add --retag` — tags pushed before a history
-  rewrite keep the orphaned commits alive.
-- `fix(sync): stop settle dropping fired uploads and claiming strangers` — two
-  duplicate-producing paths in `settle`, an invented blob in
-  `reconcile_inflight`, and a blocked run stamping the header. `subpath`
-  rejected in config.
-- `docs: changelog for v0.3.2` — release notes for the audit fixes.
-- `feat: one-line installer, attached to every release` — `install.sh` plus a
-  `Detent.tgz` asset built from each tag; release bodies gain a generated
-  "What's Changed" list and `--print-notes` dumps them all.
-- `docs: lead the README with installing and using Detent` — removed a second,
-  contradictory Install section and a stale "not yet done" claim.
-- `fix(github): retry transient failures and fall back from the archive` — a
-  504 on the first JSON request killed a whole sync.
-- `fix(ui): let fetch_files own its download progress label` — the byte
-  percentage was computed and then overwritten with a frozen file counter.
-- `fix(sync): scale the settle deadline with the batch size` — a flat 300s
-  left the tail of a 1,198-file sync unresolved.
-- `perf(github): weigh the tarball decision and fetch files in parallel` —
-  blob sizes are kept; a partial selection no longer pulls 2.2 GB.
-- `fix(ui): close the progress dialog, default to Sync now, tidy the tooltip`.
-- `fix(sync): close five gaps on the add path` — an add never checked its
-  Data Panel name was free, so a first sync into a hand-touched folder made a
-  duplicate and reported a clean run; editing the Folder box saved on OK
-  (Preview included) and re-placed the whole library into the new one; preview
-  and write each resolved `ref` separately, so a moving branch meant approving
-  one file list and uploading another; a `subpath` filter rebuilt the tree as
-  a plain dict and lost `Tree.sizes`; and the progress bar was sized by `add`,
-  leaving every drift recovery pinned at full. `detect_drift` now returns a
-  `Drift` carrying the folder name map, and `Report.occupied` is the refusal.
-
-- `fix(release): map v0.3.2 to the commit that still exists` — the subject in
-  `publish.sh` was absorbed by the history rewrite, so `resolve()` found zero
-  matches and the script refused to tag or push anything at all.
-
-- `feat(release): ship a zip asset and a click-by-click install guide` — every
-  release carries `Detent.zip` beside `Detent.tgz`; Explorer opens a zip with
-  no tools and cannot open a `.tgz`, and `install.sh` needs a bash shell most
-  Windows users do not have. The README now leads with per-platform install
-  steps, then branches: adopt an existing library, or start clean in a new
-  folder. Syncing into a folder that already has files is called out, because
-  v0.4.1 refuses those uploads rather than duplicating them.
-
-- `fix(ui): confirm the real upload count, and name the changed files` — the
-  prompt counted `plan.add` while the run uploads `add + missing`, so drift
-  recovery never asked and a mixed run understated itself. `S.upload_count`
-  is the predicate. Changed-upstream paths are now listed rather than
-  counted, because Detent cannot update them and the list is all it can offer.
+- `feat(core): add manifest, plan diff and path mapping`
+- `feat(core): add github source, data panel and sync orchestration`
+- `feat(addin): add Fusion command with JSON config and adopt mode`
+- `refactor: remove dead code and redundant comments`
+- `chore: rename add-in to Detent`
+- `chore: version 0.1`
+- `chore: add MIT license`
+- `fix(github): stream tarball download with progress and cancellation` — first sync no longer freezes Fusion.
+- `fix(plan): use git-style glob semantics for include patterns` — some files were skipped.
+- `fix(ui): distinguish download and upload progress phases`
+- `fix(datapanel): fire uploads without blocking on uploadState` — waiting made each upload take minutes.
+- `perf(sync): list each folder once per settle pass`
+- `refactor(datapanel): resolve uploads through DataFileFuture`
+- `test(datapanel): cover upload state transitions`
+- `perf(sync): scan folders before polling upload futures` — uploaded files appear in the folder immediately.
+- `fix(ui): populate renamed report and bind folder input to source`
+- `fix(manifest): stamp ref, commit and timestamp on every sync`
+- `feat(sync): detect manifest entries missing from the Data Panel` — files deleted by hand are re-uploaded.
+- `fix(addin): reload package on run and rename core to detent_core`
+- `docs: add changelog and release publishing script`
+- `docs: rename v0.1 to v0.1.0 and add --retag`
+- `fix(sync): stop settle dropping fired uploads and claiming strangers` — two ways to create duplicates.
+- `feat: one-line installer, attached to every release`
+- `chore: Update README with clearer installation steps`
+- `chore: Revise installation instructions in README.md`
+- `docs: lead the README with installing and using Detent`
+- `fix(github): retry transient failures and fall back from the archive`
+- `fix(ui): let fetch_files own its download progress label`
+- `fix(sync): scale the settle deadline with the batch size`
+- `perf(github): weigh the tarball decision and fetch files in parallel` — partial syncs don't download the whole repo.
+- `fix(sync): block uploads onto existing names and confirm folder changes`
+- `fix(release): correct v0.3.2 commit in tag map`
+- `feat(release): add zip asset and Windows install steps`
+- `docs(readme): describe the three actions and current limits`
+- `fix(ui): include re-placed files in the upload confirmation`
+- `docs: rewrite README, changelog and CLAUDE.md in plain language`
 
 ## Push
 
 ```bash
-cd ~/fusion-library-sync && git add -A && \
-git commit -m "docs: update CLAUDE.md" && git push origin main
+cd ~/fusion-library-sync && git push origin main
+```
+
+To publish releases after pushing:
+
+```bash
+cd ~/fusion-library-sync && ./scripts/publish.sh --go
 ```
