@@ -1,8 +1,8 @@
-"""Resolving a Fusion project, defensively.
+"""Finding the Fusion project.
 
-`app.data.activeProject` raises InternalValidationError when the Data Panel
-has not been initialised in the session. Observed 6 Sep 2026: waking the panel
-did not fix it, and the activeDocument fallback is what worked.
+`app.data.activeProject` raises InternalValidationError if the Data Panel
+hasn't loaded yet. Going through the active document works when it doesn't
+(checked 6 Sep 2026).
 """
 
 from typing import List, Optional, Tuple
@@ -10,7 +10,7 @@ import time
 
 
 def wake_data_panel(app, log: Optional[List[str]] = None) -> None:
-    """Force the lazy data model to initialise."""
+    """Make Fusion load its data model."""
     try:
         app.data.isDataPanelVisible = True
         for _ in range(16):
@@ -50,8 +50,7 @@ def list_projects(app) -> List[Tuple[str, str, object]]:
 
 def resolve_project(app, project_id: Optional[str] = None,
                     log: Optional[List[str]] = None):
-    """Try every route before giving up. activeProject is the documented one;
-    activeDocument is the one that worked when it raised."""
+    """Try each way of finding the project in turn."""
     if log is None:
         log = []
     wake_data_panel(app, log)

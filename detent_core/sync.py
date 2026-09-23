@@ -1,12 +1,10 @@
-"""Orchestration: plan -> confirm -> apply.
+"""Sync: plan, confirm, apply.
 
-Phase 1 writes one kind of thing: files new to the target. Everything else is
-reported.
+Only new files are uploaded. Everything else is reported.
 
-    INVARIANT: never upload a path already recorded in the manifest.
-
-Fusion will not stop us, so the manifest is the only guard: written before an
-upload (inflight), again once confirmed (placed), flushed after every file.
+Rule: never upload a path the manifest already has. Fusion allows duplicate
+names, so the manifest is the only guard. It is saved before each upload
+(inflight), after it's confirmed (placed), and after every file.
 """
 
 from dataclasses import dataclass, field
@@ -38,9 +36,7 @@ class Report:
     collisions: Dict[str, List[str]] = field(default_factory=dict)
     unmappable: List[Tuple[str, str]] = field(default_factory=list)
     conflicts: List[Tuple[str, str]] = field(default_factory=list)
-    # A file we have never placed whose Data Panel name is already taken by
-    # something we did not put there. Refused, not failed: uploading would
-    # produce the duplicate this tool exists to prevent.
+    # New files whose name is already taken in the folder. Not uploaded.
     occupied: List[Tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -69,11 +65,10 @@ class Report:
 
 @dataclass
 class Drift:
-    """What one walk of the Data Panel found.
+    """Result of one scan of the Data Panel.
 
-    `present` and `names` are None when no walk happened - verify_placed off,
-    or the scan raised. None means "unknown", which callers must not read as
-    "empty": an empty name map would say every name is free.
+    `present` and `names` are None if no scan ran. None means unknown, not
+    empty.
     """
     missing: Set[str] = field(default_factory=set)
     occupied: Dict[str, str] = field(default_factory=dict)
@@ -82,29 +77,16 @@ class Drift:
 
 
 def upload_count(plan: "PL.Plan", report: Report) -> int:
-    """How many files a write run would actually send.
-
-    Not len(plan.add). A run also re-places everything in plan.missing, and the
-    confirmation used to count only the adds - so a drift recovery of 45 files
-    was uploaded with no prompt at all, and a run of 5 new plus 45 missing
-    asked to upload 5 and then sent 50.
-
-    Files refused for a taken name are subtracted: they are in to_place but
-    nothing is sent for them.
-    """
+    """Number of files a sync will actually upload: new plus missing, minus
+    any refused because the name is taken."""
     return max(0, len(plan.to_place) - len(report.occupied))
 
 
 def folder_change_impact(manifest: Optional[Manifest],
                          old_folder: str, new_folder: str) -> int:
-    """How many recorded files moving the target folder would strand.
-
-    The manifest records repo paths and lineages, never the folder they were
-    placed in - that lives in config - so this comparison can only be made by
-    the caller that holds both. Pointing a source at a new folder makes every
-    entry read as missing from the new location, and a sync then uploads a
-    second copy of the whole library. Detent cannot delete the first.
-    """
+    """Number of recorded files that would be uploaded again if the target
+    folder changes. The manifest doesn't store the folder, so the caller
+    passes both."""
     def parts(value: str) -> Tuple[str, ...]:
         return tuple(p for p in (value or "").split("/") if p)
 
@@ -115,13 +97,10 @@ def folder_change_impact(manifest: Optional[Manifest],
 
 def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
                        selected: Optional[Dict[str, str]] = None) -> None:
-    """Resolve uploads interrupted by a crash by looking in the cloud, not the
-    manifest. One match landed; none is safe to retry; more needs a human.
+    """Settle uploads interrupted by a crash by checking the folder.
 
-    `selected` supplies the blob for a file that landed. Without it the entry
-    was recorded with blob="" - not None, so never 'unverified', and never
-    equal to any real SHA - which reported the file as changed upstream on
-    every single sync from then on.
+    One file with that name: it landed, record it. None: drop it so it's
+    retried. More than one: needs a human. `selected` supplies the blob.
     """
     for repo_path, entry in list(manifest.in_state(INFLIGHT).items()):
         try:
@@ -148,44 +127,22 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
 
 
 def detect_drift(manifest: Manifest, panel: DataPanel) -> Drift:
-    """Find manifest entries the Data Panel no longer backs up.
+    """Find placed files that are no longer in the Data Panel.
 
-    Returns a Drift:
-      missing  - the lineage is gone and nothing holds its name. Safe to
-                 re-place.
-      occupied - the lineage is gone but something else now sits under that
-                 name. NOT safe to re-place, and a human has to look.
-      present  - every lineage in the subtree right now. settle uses it to
-                 tell our own uploads from files that were already there,
-                 which saves a second walk of the same folders.
-      names    - the display names in each folder, from the same walk. A first
-                 placement checks it so an add never lands beside a file
-                 somebody imported by hand.
+    missing   lineage gone, name free: safe to upload again
+    occupied  lineage gone, another file has the name: report, don't upload
+    present   every lineage found, so settle can tell our uploads apart
+    names     every name per folder, so new files don't land on a taken name
 
-    Without this a deleted folder leaves Detent reporting 'up to date' over an
-    empty shelf, which is the worst thing a sync tool can be confidently wrong
-    about.
+    If the scan fails, return an empty Drift. Treating a failed scan as
+    "everything is gone" would re-upload the whole library.
 
-    Identity is the lineage, never the name: a name match is satisfied by any
-    file that happens to share it. But the name still has to be checked before
-    re-placing, because re-placing is the one path that uploads over a manifest
-    entry - relax that bar on lineage alone and this function becomes a way to
-    manufacture the very duplicates the tool exists to prevent.
-
-    A scan that fails returns nothing rather than everything. Read as 'it is
-    all gone', one transient API error would re-upload an entire library on top
-    of itself. A false negative costs a stale row; a false positive costs
-    duplicates nobody can undo.
-
-    NOTE: maps without the source subpath, matching apply_plan and
-    reconcile_inflight. adopt_existing maps WITH it, so the two disagree for a
-    source that sets one. Unused today; tracked separately.
+    Maps paths without `subpath`, like apply_plan. adopt_existing uses it, so
+    the two disagree if a subpath is set. Config rejects subpath for now.
     """
     try:
         scan = panel.scan()
     except Exception:                                  # noqa: BLE001
-        # Unknown, not empty. Leaving present/names at None makes apply_plan
-        # take its own listing rather than trust a map it never built.
         return Drift()
 
     present = {f.lineage for files in scan.values() for f in files}
@@ -215,26 +172,18 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
            on_progress: Optional[Progress], max_wait: float,
            mapped_by_path: Optional[Dict[str, object]] = None,
            pre_existing: Optional[Set[str]] = None) -> None:
-    """Resolve fired uploads into recorded lineages.
+    """Record the lineage of each started upload.
 
-    Measured 6 Sep 2026: a fired file appears in folder.dataFiles immediately
-    - first_appeared_s was 0.0 for all five - and the collection is live, so
-    no refresh is needed (DataFolder has no refresh() anyway). Meanwhile
-    uploadState took 18-50s to leave Processing.
+    An uploaded file shows up in its folder immediately, while Fusion's upload
+    status takes 18-50 s. So check the folder first and ask the upload handle
+    only for what the folder check misses.
 
-    So: scan the folder first, which is instant. Fall back to polling the
-    future only for anything the scan does not find.
+    `pre_existing` is every lineage that was there before this run. Those are
+    never claimed as ours.
 
-    `pre_existing` is the set of lineages present BEFORE this run fired
-    anything. A name hit that was already there is somebody else's file, and
-    claiming its lineage would leave the manifest owning a file we never
-    created - while ours sits beside it unrecorded.
-
-    Nothing here drops a manifest entry. Every path in this function has
-    already called begin_upload, so the file may well be in the cloud; the
-    entry stays inflight and reconcile_inflight settles it next run by
-    looking. Dropping it removes the only guard against re-uploading, which
-    is how a folder ends up with three files of one name.
+    Never drops a manifest entry: the file may already be in the cloud, and
+    the entry is what stops it being uploaded twice. Unresolved entries stay
+    inflight for reconcile_inflight to check next run.
     """
     pre_existing = pre_existing or set()
     pending = dict(handles)
@@ -243,7 +192,7 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
     first_pass = True
 
     while pending and time.time() < deadline:
-        # --- fast path: one live listing per folder, no refresh
+        # Check each folder once per pass.
         by_folder: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
         for repo_path in pending:
             pp = (mapped_by_path or {}).get(repo_path)
@@ -269,7 +218,6 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                 continue
 
             for repo_path, name in wanted:
-                # Only files that were not already there can be ours.
                 hits = [h for h in present.get(name, [])
                         if h.lineage not in pre_existing]
                 if len(hits) == 1:
@@ -278,12 +226,11 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                     report.added.append(repo_path)
                     pending.pop(repo_path, None)
                 elif len(hits) > 1:
-                    # Ambiguous by name - so ask the future, which knows which
-                    # file WE created. Only give up if it cannot tell us.
+                    # Same name twice: the upload handle knows which is ours.
                     try:
                         placed = panel.poll_upload(pending[repo_path])
                     except UploadFailed as exc:
-                        # Left inflight on purpose: it may still have landed.
+                        # Stays inflight: it may still have landed.
                         report.failures.append((repo_path, str(exc)))
                         pending.pop(repo_path, None)
                         continue
@@ -299,12 +246,12 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                              "identify itself - left for the next run to reconcile"))
                         pending.pop(repo_path, None)
 
-        # --- fallback: ask the future about whatever the scan missed
+        # Ask the upload handle about anything not found in the folder.
         for repo_path, handle in list(pending.items()):
             try:
                 placed = panel.poll_upload(handle)
             except UploadFailed as exc:
-                # Left inflight on purpose: it may still have landed.
+                # Stays inflight: it may still have landed.
                 report.failures.append((repo_path, str(exc)))
                 pending.pop(repo_path, None)
                 continue
@@ -341,15 +288,10 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                want_bytes: int = 0, total_bytes: int = 0,
                known_names: Optional[Dict[Tuple[str, ...], Set[str]]] = None
                ) -> Report:
-    """Additive half of a plan. Writes nothing when dry_run.
+    """Upload new and missing files. Writes nothing when dry_run.
 
-    known_lineages: every lineage already in the target subtree, from the
-    drift scan sync() has just done. Passed on to settle so it can tell our
-    uploads from files that were there first. None means take a listing here.
-
-    known_names: the display names already in each target folder, from the
-    same scan. A first placement is checked against it - see the guard in the
-    upload loop. None means take a listing here.
+    known_lineages and known_names come from the drift scan. If None, each
+    target folder is listed here instead.
     """
     report = Report(
         skipped_changed=list(plan.change),
@@ -358,19 +300,14 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
         conflicts=[(p, "gone from the Data Panel, but its name is taken - "
                        "resolve by hand") for p in plan.conflict],
     )
-    # Files the manifest claims but the Data Panel does not have. The stale
-    # entry is the thing standing between them and a re-upload, so it goes.
+    # Missing files: the manifest says placed, the Data Panel disagrees.
     replace = set(plan.missing)
 
-    # Map every path first. A collision or an unmappable path blocks the run:
-    # two repo files landing on one Data Panel name is how a library silently
-    # loses a part.
+    # Map every path first. A collision or unmappable path blocks the run.
     mapped, errors, collisions = P.map_all(plan.to_place)
     report.unmappable = errors
     report.collisions = collisions
-    # An altered name that nobody sees becomes a duplicate on the next sync,
-    # because the manifest keys on the repo path and the panel keys on the
-    # name. Surface it in preview as well as after writing.
+    # Reported in preview too: an unnoticed rename becomes a duplicate later.
     report.renamed = [(pp.repo_path, pp.name) for pp in mapped if pp.altered]
     if errors or collisions:
         return report
@@ -378,14 +315,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     if not mapped:
         return report
 
-    # Everything already in the target folders, before we add to them. settle
-    # uses the lineages to tell our uploads from files that were there first;
-    # the names stop a first placement landing on a name somebody else's file
-    # already holds.
-    #
-    # A preview reuses the drift scan for free. It does NOT take listings of
-    # its own - a preview that writes nothing should not cost a walk of the
-    # Data Panel - so with no scan to lean on it reports what it can see.
+    # What's already in the target folders. Preview only uses the drift scan;
+    # it doesn't list folders itself.
     pre_existing: Set[str] = set(known_lineages or ())
     taken: Dict[Tuple[str, ...], Set[str]] = dict(known_names or {})
     if (known_lineages is None or known_names is None) and not dry_run:
@@ -393,26 +324,17 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
             try:
                 listing = panel.list_folder(panel.ensure_folder(folders))
             except Exception:                         # noqa: BLE001
-                # Unreadable folder: we cannot prove ownership there, so
-                # settle falls back to the future - slower and correct.
+                # Can't list it: settle falls back to the upload handle.
                 continue
             if known_lineages is None:
                 pre_existing.update(f.lineage for f in listing)
             if known_names is None:
                 taken[folders] = {f.name for f in listing}
 
-    # A first placement must not land on a name that is already there. The
-    # manifest guard in the upload loop only knows about files WE placed; a
-    # file the user imported by hand is invisible to it, and Fusion accepts the
-    # second one without a word. That is the duplicate this whole tool exists
-    # to prevent, and until now the add path never looked.
-    #
-    # Re-placements are exempt: detect_drift has already routed an occupied
-    # name into plan.conflict, so it never reaches here.
-    #
-    # Best effort by design. A folder that could not be listed is absent from
-    # `taken` and its uploads proceed as they always did - a transient listing
-    # error must not block a legitimate first sync. settle is the backstop.
+    # Don't upload a new file onto a name that's already in the folder. The
+    # manifest only knows files Detent placed, so this catches files added by
+    # hand. Missing files are exempt: detect_drift already checked their names.
+    # A folder that couldn't be listed isn't checked.
     blocked = {pp.repo_path for pp in mapped
                if pp.repo_path not in replace
                and pp.name in taken.get(pp.folders, ())}
@@ -425,12 +347,9 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     own_workdir = workdir is None
     workdir = workdir or tempfile.mkdtemp(prefix="detent-")
     try:
-        # No point fetching bytes for a file we have already refused to place.
         wanted = [pp.repo_path for pp in mapped if pp.repo_path not in blocked]
 
-        # fetch_files owns its own labels: it is the only layer that knows
-        # whether this is one archive or N files, and how far along it is.
-        # Rewriting the label here is what discarded the byte percentage.
+        # fetch_files sets its own progress labels.
         fetched, fetch_failures = gh.fetch_files(
             src, wanted, workdir, transport, commit,
             on_progress=on_progress, threshold=threshold,
@@ -440,24 +359,18 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
 
         total = len(wanted)
         handles: Dict[str, object] = {}
-        # Counts files actually sent, not positions in `mapped`. Skipped
-        # entries - refused names, fetch failures, paths the manifest already
-        # owns - would otherwise run the counter past its own total.
-        sent = 0
+        sent = 0                              # files actually sent, for progress
         for pp in mapped:
             local = fetched.get(pp.repo_path)
             if not local:
                 continue                      # already recorded as a fetch failure
 
-            # Belt and braces: never upload something the manifest knows -
-            # unless we have just confirmed the file it points at is gone.
+            # Never upload a path the manifest has, unless it's missing.
             known = manifest.get(pp.repo_path)
             if (known is not None and known.state != INFLIGHT
                     and pp.repo_path not in replace):
                 continue
 
-            # Refused above: the name is already taken by a file we did not
-            # place. Already recorded in report.occupied.
             if pp.repo_path in blocked:
                 continue
 
@@ -480,12 +393,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                 continue
 
         if handles:
-            # One second per fired upload, floor 300. A flat 300 was fine for
-            # 45 files and left the tail of a 1,198-file batch unresolved:
-            # every upload is fired at once, so the last one to be processed
-            # waits behind all the others in Fusion's own queue. The loop polls
-            # and yields once a second, so a longer deadline costs nothing when
-            # everything settles early.
+            # One second per upload, at least 300. Fusion processes uploads in
+            # a queue, so big batches need longer.
             wait = settle_wait if settle_wait is not None else max(300.0, float(len(handles)))
             settle(manifest, panel, selected, report, manifest_path,
                    handles, on_progress, wait,
@@ -512,18 +421,11 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          settle_wait: Optional[float] = None,
          verify_placed: bool = True,
          commit: Optional[str] = None) -> Tuple[PL.Plan, Report]:
-    """One full cycle. Defaults to dry_run.
+    """Run one full sync. Defaults to dry_run.
 
-    verify_placed walks the Data Panel to check the manifest is still telling
-    the truth. It costs one listing per folder; turning it off makes a sync
-    trust its own bookkeeping, which is fine right up until someone deletes a
-    folder by hand.
-
-    commit pins the run to a SHA instead of resolving `ref` again. A preview
-    and the write the user approves from it must be the same commit: `ref`
-    defaults to a branch, so between the two dialogs it can move, and the user
-    would approve one file list and upload another. The resolved SHA comes
-    back on Plan.commit for exactly that hand-off.
+    verify_placed: check the Data Panel for files deleted by hand.
+    commit: use this commit instead of resolving `ref` again, so the upload
+    matches the preview. The resolved commit is returned as Plan.commit.
     """
     transport = transport or gh.UrllibTransport()
 
@@ -552,14 +454,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
                         want_bytes=getattr(tree, "bytes_for", lambda _p: 0)(selected),
                         total_bytes=getattr(tree, "total_bytes", 0))
 
-    # Stamp last, and here rather than inside apply_plan, which returns early
-    # on every path that has nothing to upload. A run that finds nothing still
-    # checked, and the manifest is the only place that fact can live.
-    # Cancellation raises out of apply_plan, so an aborted run never stamps.
-    # A run blocked before it wrote anything has not reconciled this ref with
-    # anything, so it must not leave a header saying it did. Upload failures
-    # are different: the tree WAS compared, and the per-file entries record
-    # what actually landed.
+    # Record that the sync ran, even if nothing was uploaded. Skipped for
+    # previews, cancelled runs (they raise before here) and blocked runs.
     blocked = bool(report.collisions or report.unmappable)
     if not dry_run and not blocked:
         manifest.stamp(src.ref, commit)
@@ -574,17 +470,16 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
                    transport: gh.Transport, at_ref: Optional[str],
                    include: Sequence[str] = ("**/*.f3d",),
                    dry_run: bool = True) -> Tuple[Manifest, Dict[str, int]]:
-    """Claim a library the user already imported. Uploads nothing.
-    at_ref=None records lineages with no blob rather than guessing."""
+    """Record a library the user already has. Uploads nothing.
+
+    With at_ref=None, files are recorded without a blob (unverified).
+    """
     release_known = at_ref is not None
-    # Paths to match on always come from a tree - at the named release when we
-    # have one, otherwise at the current ref. Without this an unknown-release
-    # adopt has nothing to match and silently records an empty manifest.
+    # Without a release, match against the current ref.
     match_ref = at_ref or src.ref
     tree = gh.fetch_tree(gh.Source(src.repo, match_ref, src.subpath), transport)
     tree = PL.select(tree, include)
 
-    # One walk of the Data Panel - it is expensive against the real API.
     panel_contents = panel.scan()
     local: Dict[str, str] = {}
     by_name: Dict[Tuple[Tuple[str, ...], str], str] = {}

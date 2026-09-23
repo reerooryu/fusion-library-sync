@@ -1,15 +1,9 @@
 """The Data Panel, behind an interface.
 
-Two implementations:
-  FusionDataPanel - the real thing; imports adsk lazily so this module stays
-                    importable (and testable) outside Fusion.
-  FakeDataPanel   - an in-memory stand-in that reproduces Fusion's DANGEROUS
-                    behaviour: uploading a same-named file into a folder
-                    creates a second file on a new lineage, silently. Verified
-                    against a live project on 6 Sep 2026.
-
-The fake models the bug on purpose. A test suite against a well-behaved fake
-would prove nothing about the invariant we actually have to hold.
+FusionDataPanel is the real one; it imports adsk only when created, so this
+module works outside Fusion. FakeDataPanel is for tests, and copies Fusion's
+behaviour of silently keeping two files with the same name (checked on a live
+project, 6 Sep 2026), so the tests can catch duplicates.
 """
 
 from dataclasses import dataclass
@@ -29,8 +23,8 @@ class UploadFailed(RuntimeError):
 
 
 class DataPanel(Protocol):
-    # No blocking upload(): waiting on a future Fusion cannot resolve while
-    # blocked cost 228s per file. Fire with begin_upload, resolve with a scan.
+    # No blocking upload. Waiting on an upload cost 228 s per file, so uploads
+    # are started with begin_upload and confirmed later.
     def ensure_folder(self, folders: Sequence[str]) -> str: ...
     def begin_upload(self, folder_id: str, local_path: str, name: str): ...
     def poll_upload(self, handle) -> Optional[PlacedFile]: ...
@@ -41,7 +35,7 @@ class DataPanel(Protocol):
 
 # --------------------------------------------------------------------------
 class FakeDataPanel:
-    """In-memory Data Panel with Fusion's real duplicate behaviour."""
+    """In-memory Data Panel that allows duplicate names, like Fusion."""
 
     def __init__(self, fail_on: Optional[Sequence[str]] = None,
                  crash_after: Optional[int] = None,
@@ -65,27 +59,25 @@ class FakeDataPanel:
         return self.folders[key]
 
     def upload(self, folder_id: str, local_path: str, name: str) -> PlacedFile:
-        """Place a file instantly. Tests use it directly to stage files that
-        arrived by some other route; core never calls it."""
+        """Place a file at once. For tests setting up files; sync never calls it."""
         if name in self.fail_on:
             raise UploadFailed(f"simulated failure for {name!r}")
         if self.crash_after is not None and len(self.uploads) >= self.crash_after:
             raise KeyboardInterrupt("simulated interruption")
 
         self.uploads.append(name)
-        # Fusion does NOT dedupe, warn, or rename. Neither do we.
+        # Like Fusion: no check for an existing file with this name.
         pf = PlacedFile(name=name, lineage=f"urn:adsk.wipprod:dm.lineage:{next(self._ids)}")
         self.contents[folder_id].append(pf)
         return pf
 
     def begin_upload(self, folder_id: str, local_path: str, name: str):
-        """Fire, return a handle. Never blocks."""
+        """Start an upload and return a handle."""
         placed = self.upload(folder_id, local_path, name)
         return {"placed": placed, "polls": 0}
 
     def poll_upload(self, handle) -> Optional[PlacedFile]:
-        """None means still in flight. Deferred fakes take a few polls, as
-        Fusion does."""
+        """None while still uploading. With deferred=True, takes a few polls."""
         handle["polls"] += 1
         if self.deferred and handle["polls"] < 3:
             return None
@@ -107,7 +99,7 @@ class FakeDataPanel:
         return sum(len(v) for v in self.contents.values())
 
     def duplicates(self) -> Dict[str, int]:
-        """Any folder holding two files with one name. Must always be empty."""
+        """Folders holding two files with the same name. Should always be empty."""
         dupes: Dict[str, int] = {}
         for fid, files in self.contents.items():
             counts: Dict[str, int] = {}
@@ -121,10 +113,10 @@ class FakeDataPanel:
 
 # --------------------------------------------------------------------------
 class FusionDataPanel:
-    """Real Data Panel. Only constructed inside Fusion."""
+    """The real Data Panel. Only works inside Fusion."""
 
     def __init__(self, project, root_folder_path: Sequence[str] = ()):
-        import adsk.core  # noqa: F401  - fails loudly outside Fusion
+        import adsk.core  # noqa: F401  - fails outside Fusion
         self._project = project
         self._cache: Dict[Tuple[str, ...], object] = {}
         self._root = self._resolve(project.rootFolder, root_folder_path)
@@ -149,17 +141,13 @@ class FusionDataPanel:
         return folder
 
     def begin_upload(self, folder, local_path: str, name: str):
-        """Fire and return the future. Never wait here.
-
-        Uploads run concurrently: five fired in 0.17s all completed within
-        50s. Waiting on each in turn would have cost five times that.
-        """
+        """Start the upload and return straight away. Uploads run in parallel."""
         return {"future": folder.uploadFile(local_path), "name": name}
 
     def poll_upload(self, handle) -> Optional[PlacedFile]:
-        """None while still processing. Raises UploadFailed on a hard failure.
+        """None while still uploading. Raises UploadFailed if it failed.
 
-        uploadState: 0 Processing, 1 Finished, 2 Failed.
+        uploadState: 0 processing, 1 finished, 2 failed.
         """
         future = handle["future"]
         try:
@@ -179,8 +167,7 @@ class FusionDataPanel:
                           version=getattr(df, "versionNumber", 1) or 1)
 
     def list_folder(self, folder) -> List[PlacedFile]:
-        # NOTE: DataFolder has no refresh() - measured, not assumed. Calling
-        # it raises AttributeError, which a bare except used to swallow.
+        # DataFolder has no refresh(); dataFiles is always current.
         out = []
         for i in range(folder.dataFiles.count):
             f = folder.dataFiles.item(i)
@@ -192,7 +179,7 @@ class FusionDataPanel:
         return [f for f in self.list_folder(folder) if f.name == name]
 
     def scan(self) -> Dict[Tuple[str, ...], List[PlacedFile]]:
-        """Walk the whole subtree. Used by adopt and by inflight reconcile."""
+        """Every file in every folder under the root."""
         found: Dict[Tuple[str, ...], List[PlacedFile]] = {}
 
         def walk(folder, path: Tuple[str, ...]):

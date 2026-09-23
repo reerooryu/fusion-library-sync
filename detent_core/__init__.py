@@ -1,12 +1,10 @@
-"""Detent core. Version lives here so a stale import is visible.
+"""Detent core.
 
-Fusion keeps sys.modules across an add-in Stop/Run, so this can be an older
-version than Detent.py even after a clean install. The command dialog shows
-both; if they disagree, the package did not reload.
+VERSION is also in Detent.py. If they differ, Fusion is running a cached copy
+of this package and needs a restart.
 
-Named detent_core rather than core because every Fusion add-in shares one
-interpreter and one sys.path - a package called "core" is a collision waiting
-for the first other add-in that ships one.
+Named detent_core, not core, because all Fusion add-ins share one Python, and
+a generic name would clash with other add-ins.
 """
 
 VERSION = "0.4.1"

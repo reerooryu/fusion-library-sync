@@ -1,4 +1,4 @@
-"""Diff a remote tree against the manifest. Only `add` is ever written."""
+"""Compare the repo tree with the manifest. Only `add` and `missing` are uploaded."""
 
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -11,7 +11,7 @@ from .manifest import Manifest, INFLIGHT
 @lru_cache(maxsize=256)
 def _compile(pattern: str):
     """Git-style globs: '*' stops at '/', '**' crosses it, '**/' matches zero
-    or more directories. fnmatch gets all three wrong for our purposes."""
+    or more folders. fnmatch gets these wrong."""
     out, i, n = [], 0, len(pattern)
     while i < n:
         c = pattern[i]
@@ -52,16 +52,14 @@ def select(tree: Mapping[str, str],
 
 @dataclass
 class Plan:
-    add: List[str] = field(default_factory=list)         # not in manifest -> upload
-    change: List[str] = field(default_factory=list)      # blob differs -> Phase 2
-    orphan: List[str] = field(default_factory=list)      # gone upstream -> cannot delete
-    unverified: List[str] = field(default_factory=list)  # adopted with unknown blob
-    inflight: List[str] = field(default_factory=list)    # interrupted, needs reconcile
-    missing: List[str] = field(default_factory=list)     # manifest says placed, panel disagrees
-    conflict: List[str] = field(default_factory=list)    # gone, but its name is taken
-    # The commit this plan was computed against. A preview and the write that
-    # follows it must be the same commit, or the user approves one thing and
-    # uploads another - `ref` defaults to a branch, so it does move.
+    add: List[str] = field(default_factory=list)         # not in manifest: upload
+    change: List[str] = field(default_factory=list)      # blob differs: not handled yet
+    orphan: List[str] = field(default_factory=list)      # removed upstream: can't delete
+    unverified: List[str] = field(default_factory=list)  # adopted without a blob
+    inflight: List[str] = field(default_factory=list)    # interrupted upload
+    missing: List[str] = field(default_factory=list)     # placed, but gone from the panel
+    conflict: List[str] = field(default_factory=list)    # gone, and its name is taken
+    # Commit the plan was built from, so the upload matches the preview.
     commit: Optional[str] = None
 
     @property
@@ -71,19 +69,17 @@ class Plan:
 
     @property
     def to_place(self) -> List[str]:
-        """Everything this run may upload. Missing files are re-placed: the
-        manifest entry claiming they exist is what turned out to be false."""
+        """Everything this run may upload: new files and missing ones."""
         return self.add + self.missing
 
 
 def diff(remote: Mapping[str, str], manifest: Optional[Manifest],
          missing: Collection[str] = ()) -> Plan:
-    """`remote` must already be filtered by select(), or excluded files read
-    as orphans.
+    """`remote` must already be filtered by select(), or excluded files look
+    like they were removed upstream.
 
-    `missing` are paths the manifest calls placed that are no longer in the
-    Data Panel. They outrank every other classification: a file that is not
-    there cannot be up to date, changed, or unverified.
+    `missing` wins over every other category: a file that isn't there can't be
+    up to date or changed.
     """
     plan = Plan()
     files = manifest.files if manifest else {}

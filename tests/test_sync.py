@@ -1,9 +1,5 @@
-"""End-to-end sync against a fake Data Panel that duplicates like the real one.
-
-The fake is deliberately unsafe: uploading a same-named file into a folder
-creates a second file on a new lineage, silently, exactly as Fusion does.
-Every test here asserts that the orchestration never lets that happen.
-"""
+"""Sync tests against a fake Data Panel that, like Fusion, allows two files
+with the same name. Every test checks that sync never creates one."""
 
 import os
 import sys
@@ -32,7 +28,7 @@ def load_tree(tag):
 
 
 class FakeTransport:
-    """Serves a fixture tree and synthesises blob bytes."""
+    """Serves a fixture tree and made-up file contents."""
 
     def __init__(self, tree, commit="c0ffee", fail_paths=()):
         self.tree = tree
@@ -63,7 +59,7 @@ class FakeTransport:
 
 @pytest.fixture
 def small_tree():
-    """A slice small enough to avoid the tarball path, with a hostile name."""
+    """A few files, including awkward names. Small enough to skip the archive."""
     full = load_tree("v2.0.5")
     picked = {p: s for p, s in list(full.items()) if p.endswith(".f3d")}
     smart = [p for p in picked if "”" in p][:2]
@@ -108,7 +104,7 @@ class TestInvariant:
         assert panel.duplicates() == {}
 
     def test_fake_really_does_duplicate(self, small_tree, src, tmp_path):
-        """If the fake were safe, the tests above would prove nothing."""
+        """The fake must allow duplicates, or these tests prove nothing."""
         panel = FakeDataPanel()
         folder = panel.ensure_folder(("A",))
         panel.upload(folder, "/tmp/x", "Same")
@@ -129,7 +125,7 @@ class TestInvariant:
 
 
 class TestCrashRecovery:
-    """A4: interruption must never produce duplicates."""
+    """A crash mid-sync must never cause duplicates."""
 
     def test_interrupted_sync_leaves_an_inflight_record(self, small_tree, src, tmp_path):
         panel = FakeDataPanel(crash_after=3)
@@ -141,10 +137,8 @@ class TestCrashRecovery:
 
         m = Manifest.load(mpath)
         assert m is not None, "manifest must survive a crash"
-        # Uploads are fired as a batch and resolved afterwards, so a crash
-        # during the fire phase leaves everything inflight, nothing placed.
-        # Those files may still have landed; reconcile_inflight settles that
-        # on the next run by looking at the folder.
+        # A crash while starting uploads leaves them all inflight.
+        # reconcile_inflight checks the folder on the next run.
         assert len(m.in_state(PLACED)) == 0
         assert len(m.in_state(INFLIGHT)) == 4, "3 fired plus the one that died"
 
@@ -163,7 +157,7 @@ class TestCrashRecovery:
         assert Manifest.load(mpath).in_state(INFLIGHT) == {}
 
     def test_inflight_that_actually_landed_is_adopted_not_re_uploaded(self, src, tmp_path):
-        """The dangerous window: upload succeeded, manifest write did not."""
+        """The upload succeeded but the manifest wasn't updated."""
         tree = {"A/Part.f3d": "sha1"}
         panel, tr = FakeDataPanel(), FakeTransport(tree)
         mpath = str(tmp_path / "m.json")
@@ -201,7 +195,7 @@ class TestCrashRecovery:
 
 
 class TestFailureIsolation:
-    """A7: one bad file never aborts a run."""
+    """One bad file doesn't stop the run."""
 
     def test_upload_failure_is_isolated_and_retryable(self, small_tree, src, tmp_path):
         victim = sorted(small_tree)[2]
@@ -267,8 +261,7 @@ class TestHostilePaths:
         assert plan.add == [], "phantom re-add of a non-ASCII path"
 
     def test_an_altered_name_is_always_reported(self, src, tmp_path):
-        """A name we changed and did not mention becomes tomorrow's duplicate:
-        the manifest keys on the repo path, the panel keys on the name."""
+        """An unreported rename becomes a duplicate on the next sync."""
         tree = {"A/Part .f3d": "sha1", "A/Plain.f3d": "sha2"}
         panel, tr = FakeDataPanel(), FakeTransport(tree)
         mpath = str(tmp_path / "m.json")
@@ -317,7 +310,7 @@ class TestStrategy:
 
 
 class TestAdopt:
-    """Claiming a library the user already imported. Uploads nothing."""
+    """Adopt records an existing library and uploads nothing."""
 
     def _panel_with(self, tree, src):
         from detent_core import paths as P
@@ -354,9 +347,8 @@ class TestAdopt:
         assert panel.duplicates() == {}
 
     def test_unknown_release_still_adopts_the_files(self, small_tree, src, tmp_path):
-        """Regression: passing at_ref=None used to match against an empty tree
-        and silently record an EMPTY manifest, so the next sync re-uploaded
-        the user's entire library."""
+        """With no release given, Adopt still matches files. It used to record
+        nothing."""
         panel = self._panel_with(small_tree, src)
         tr = FakeTransport(small_tree)
         mpath = str(tmp_path / "m.json")
@@ -396,7 +388,7 @@ class TestAdopt:
 
 
 class TestEstimates:
-    """The confirm dialog must state cost, not just a file count."""
+    """The confirm dialog shows size and time, not just a count."""
 
     def test_bootstrap_states_files_size_and_time(self):
         text = gh.estimate(1198, 2_362_232_012)
@@ -420,7 +412,7 @@ class TestEstimates:
 
 
 class TestCancel:
-    """A long download must be interruptible, and leave nothing half-written."""
+    """Cancel stops the download and leaves nothing half-done."""
 
     class CancellingTransport(FakeTransport):
         def get_bytes(self, url, on_chunk=None):
@@ -441,8 +433,7 @@ class TestCancel:
         assert panel.duplicates() == {}
 
     def test_cancel_does_not_stamp_the_manifest(self, small_tree, src, tmp_path):
-        """An aborted run has not checked anything. Saying it has would make
-        the next run trust a tree it never finished reading."""
+        """A cancelled run must not be recorded as a completed sync."""
         panel = FakeDataPanel()
         mpath = str(tmp_path / "m.json")
         head, rest = dict(list(small_tree.items())[:3]), dict(small_tree)
@@ -465,10 +456,7 @@ class TestCancel:
 
 
 class TestManifestHeader:
-    """The header answers 'when did this last run, against what'. Every field
-    in it was stale in some way: synced_at was never assigned at all, ref was
-    frozen at creation, and synced_commit only moved when a file happened to
-    be uploaded."""
+    """The manifest header records when, and against what, the last sync ran."""
 
     def test_a_sync_records_when_it_ran(self, small_tree, src, tmp_path):
         mpath = str(tmp_path / "m.json")
@@ -478,8 +466,7 @@ class TestManifestHeader:
 
     def test_a_run_with_nothing_to_add_still_records_the_check(
             self, small_tree, src, tmp_path):
-        """The steady state. If only uploads stamp the manifest, a library that
-        is up to date looks like one that was never checked."""
+        """A sync with nothing to upload still records that it ran."""
         panel = FakeDataPanel()
         mpath = str(tmp_path / "m.json")
 
@@ -496,8 +483,7 @@ class TestManifestHeader:
         assert m.synced_commit == "commit_BBB"
 
     def test_ref_follows_the_config(self, small_tree, tmp_path):
-        """Editing ref in config.json must not leave the manifest lying about
-        which release it tracks."""
+        """Changing ref in config.json updates the manifest."""
         repo = "VEX-CAD/VEX-CAD-Fusion-360-Library"
         panel = FakeDataPanel()
         mpath = str(tmp_path / "m.json")
@@ -531,9 +517,8 @@ class TestManifestHeader:
 
 
 class TestAsyncUpload:
-    """Fusion completes uploads on the event loop, so a fired upload lands in
-    the folder while its future still reports Processing. Blocking on that
-    future is what turned a ~10s upload into a 300s timeout."""
+    """Uploads are started and confirmed later. Waiting on each one took
+    minutes."""
 
     def test_deferred_uploads_are_resolved_by_looking_at_the_folder(
             self, small_tree, src, tmp_path):
@@ -582,13 +567,8 @@ class TestAsyncUpload:
 
     def test_lineage_comes_from_our_own_upload_not_a_name_match(
             self, src, tmp_path):
-        """Polling the future gives the identity of the file WE created, so a
-        same-named neighbour cannot be mistaken for ours.
-
-        The decoy arrives AFTER the drift scan, which is the only way a
-        same-named stranger still reaches settle: a decoy already present is
-        refused by the add-path name guard and never uploaded at all.
-        """
+        """With two files of the same name, the upload handle picks ours. The
+        decoy arrives after the scan, the only way one gets this far."""
         tree = {"A/Part.f3d": "sha"}
 
         class RaceIn(FakeDataPanel):
@@ -605,8 +585,7 @@ class TestAsyncUpload:
 
         plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
 
-        # Two files named Part: the scan cannot tell them apart, so the
-        # future is consulted and its lineage wins.
+        # Two files named Part: the upload handle decides.
         entry = Manifest.load(mpath).get("A/Part.f3d")
         assert entry is not None, "gave up instead of asking the future"
         assert panel.decoy is not None
@@ -629,15 +608,12 @@ class TestAsyncUpload:
                            settle_wait=5.0)
 
         assert any("state 2" in msg for _, msg in rep.failures)
-        # begin_upload was already called, so the file may be in the cloud.
-        # Dropping the entry here is what let a later run upload a second
-        # copy; it stays inflight and the next run looks before retrying.
+        # The file may already be in the cloud, so the entry stays inflight.
         entry = Manifest.load(mpath).get("A/Part.f3d")
         assert entry is not None and entry.state == INFLIGHT
 
     def test_no_blocking_wait_on_the_future(self):
-        """Regression guard for the actual bug: sync must not call the
-        blocking upload() path."""
+        """sync must never wait on an upload."""
         import inspect
         src_text = inspect.getsource(S.apply_plan)
         assert "begin_upload" in src_text
@@ -646,12 +622,9 @@ class TestAsyncUpload:
 
 
 class TestSettleResilience:
-    """settle() polls a live API. It must be frugal and must not die on a
-    transient error."""
+    """settle must not overload the API or fail on a temporary error."""
 
     def test_one_listing_per_folder_per_pass(self, src, tmp_path):
-        """Regression: asking per file meant a refresh() round trip for every
-        pending path, every second."""
         tree = {f"A/Part{i}.f3d": f"s{i}" for i in range(20)}
 
         class Counting(FakeDataPanel):
@@ -691,9 +664,7 @@ class TestSettleResilience:
         assert Manifest.load(mpath).get("A/Part.f3d").state == PLACED
 
     def test_settle_scans_first_and_polls_as_fallback(self):
-        """Measured: a fired file appears in dataFiles at t=0, while
-        uploadState takes 18-50s. So scan, and only poll what the scan
-        misses."""
+        """Files appear in the folder at once; upload status takes 18-50 s."""
         import inspect
         body = inspect.getsource(S.settle)
         assert "list_folder" in body, "the fast path is the folder scan"
@@ -701,8 +672,7 @@ class TestSettleResilience:
         assert body.index("list_folder") < body.index("poll_upload")
 
     def test_nothing_calls_refresh_on_a_folder(self):
-        """DataFolder has no refresh(). Parse the AST rather than grep the
-        text, so a docstring mentioning it cannot pass or fail us."""
+        """DataFolder has no refresh(). Checks the code, not the comments."""
         import ast as _ast
         import inspect
         from detent_core import datapanel as DP
@@ -717,9 +687,7 @@ class TestSettleResilience:
 
 
 class TestFusionPollLogic:
-    """FusionDataPanel.poll_upload touches no adsk API, so its state machine
-    IS testable — with a fake future. Previously it was not covered at all,
-    and a mutation flipping the Processing check passed every test."""
+    """FusionDataPanel.poll_upload, tested with a fake upload handle."""
 
     def _panel(self):
         from detent_core.datapanel import FusionDataPanel
@@ -772,10 +740,7 @@ class TestFusionPollLogic:
 
 
 class TestScanIsTheFastPath:
-    """The folder scan is not decoration. Measured: a fired file is in
-    dataFiles at t=0 while uploadState takes 18-50s. If the scan stops being
-    used, everything still works — just many times slower — so assert it is
-    actually doing the resolving."""
+    """Uploads must be confirmed from the folder listing, not by waiting."""
 
     def test_deferred_upload_resolves_without_waiting_for_the_future(
             self, small_tree, src, tmp_path):
@@ -811,14 +776,10 @@ class TestScanIsTheFastPath:
 
 
 class TestDrift:
-    """The manifest is bookkeeping. When it disagrees with the Data Panel, the
-    Data Panel is right - it is the thing the user can actually see."""
+    """When the manifest and the Data Panel disagree, the Data Panel wins."""
 
     def test_the_reported_case(self, src, tmp_path):
-        """Sync at v2.0.3, sync at v2.0.5, revert the ref, delete the folder.
-        Before drift detection this reported '0 to add' over an empty folder:
-        a confident all-clear with nothing on the shelf.
-        """
+        """Sync, delete the folder by hand, preview. It used to say '0 to add'."""
         repo = "VEX-CAD/VEX-CAD-Fusion-360-Library"
         old = {f"Field/{i}.f3d": f"sha{i}" for i in range(15)}
         new = dict(old, **{f"Field/Override/{i}.f3d": f"o{i}" for i in range(33)})
@@ -885,9 +846,8 @@ class TestDrift:
         assert victim is not None
 
     def test_a_name_already_taken_is_never_overwritten(self, src, tmp_path):
-        """Someone deleted our file and put their own there under the same
-        name. Re-placing would sit a second file beside it - the exact
-        duplicate this tool exists to prevent. Report, do not upload."""
+        """Our file was deleted and another took its name. Report it, don't
+        upload."""
         tree = {"A/Part.f3d": "sha1"}
         panel = FakeDataPanel()
         mpath = str(tmp_path / "m.json")
@@ -909,8 +869,7 @@ class TestDrift:
 
     def test_a_failed_scan_never_re_uploads_the_library(self, small_tree, src,
                                                         tmp_path):
-        """Reading a broken scan as 'everything is gone' would duplicate an
-        entire library on one transient API error."""
+        """A failed scan must not look like everything is gone."""
         panel = FakeDataPanel()
         mpath = str(tmp_path / "m.json")
         S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
@@ -942,8 +901,7 @@ class TestDrift:
 
     def test_verify_placed_off_keeps_the_old_blindness(self, small_tree, src,
                                                        tmp_path):
-        """Opting out is allowed - it is a per-folder listing - but it is
-        exactly the blindness that caused this, so it must be deliberate."""
+        """With verify_placed off, deleted files aren't noticed."""
         panel = FakeDataPanel()
         mpath = str(tmp_path / "m.json")
         S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
@@ -958,18 +916,16 @@ class TestDrift:
 
 
 class TestSettleNeverDropsAFiredUpload:
-    """begin_upload has been called, so the file may already be in the cloud.
-    The manifest entry is the only thing stopping a second copy; nothing in
-    settle may remove it. reconcile_inflight settles it next run by looking."""
+    """A started upload may already be in the cloud, so settle never drops its
+    manifest entry."""
 
     class Ambiguous(FakeDataPanel):
         def poll_upload(self, handle):
             return None                      # future never resolves
 
     def test_unresolvable_upload_does_not_duplicate_next_run(self, src, tmp_path):
-        """The stranger lands in the window between the drift scan and our
-        upload, so the add-path name guard cannot see it and settle is left
-        with two same-named files and a future that never resolves."""
+        """A same-named file arrives after the scan, and the upload never
+        confirms."""
         tree = {"A/Part.f3d": "sha1"}
 
         class AmbiguousRace(FakeDataPanel):
@@ -999,8 +955,7 @@ class TestSettleNeverDropsAFiredUpload:
 
     def test_upload_error_leaves_the_entry_inflight(self, src, tmp_path):
         class Erroring(FakeDataPanel):
-            """Fires, nothing appears in the folder, and the future errors -
-            so neither the scan nor the future can settle it."""
+            """Nothing appears in the folder and the upload status errors."""
             def begin_upload(self, folder_id, local_path, name):
                 return {"placed": None, "polls": 0}
             def poll_upload(self, handle):
@@ -1015,9 +970,7 @@ class TestSettleNeverDropsAFiredUpload:
 
 
     def test_ambiguous_unresolved_upload_is_not_dropped(self, src, tmp_path):
-        """Two same-named files appear that were BOTH absent when we started,
-        and the future never says which is ours. Dropping the entry here is
-        what let the next run add a third."""
+        """Two new files with the same name, and no way to tell which is ours."""
         class DoubleLanding(FakeDataPanel):
             def begin_upload(self, folder_id, local_path, name):
                 a = FakeDataPanel.upload(self, folder_id, local_path, name)
@@ -1042,9 +995,8 @@ class TestSettleNeverDropsAFiredUpload:
 
 class TestSettleClaimsOnlyItsOwnUploads:
     def test_a_stranger_already_there_means_we_never_upload(self, src, tmp_path):
-        """One name hit is not proof of ownership. Identity is the lineage -
-        and now the add path refuses before anything is fired, rather than
-        uploading beside the stranger and sorting it out afterwards."""
+        """A file already using the name is never claimed, and nothing is
+        uploaded."""
         tree = {"A/Part.f3d": "sha1"}
         panel = FakeDataPanel()
         folder = panel.ensure_folder(("A",))
@@ -1061,10 +1013,8 @@ class TestSettleClaimsOnlyItsOwnUploads:
         assert Manifest.load(mpath).get("A/Part.f3d") is None
 
     def test_settle_still_refuses_a_pre_existing_lineage(self, tmp_path):
-        """Defence in depth. The add guard stops these before an upload is
-        fired, but it is best-effort - a folder that could not be listed is
-        absent from its name map - so settle's pre_existing filter is still
-        the last line and must keep working."""
+        """Backup check: settle never claims a file that was there before the
+        run."""
         from detent_core import paths as P
 
         panel = FakeDataPanel()
@@ -1090,8 +1040,7 @@ class TestSettleClaimsOnlyItsOwnUploads:
 
 class TestReconciledBlobIsReal:
     def test_a_recovered_file_is_not_changed_forever(self, src, tmp_path):
-        """blob="" is neither None nor any real SHA, so diff() called it
-        'changed upstream' on every sync from then on."""
+        """blob="" made recovered files show as changed forever."""
         tree = {"A/Part.f3d": "sha1"}
         panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
         folder = panel.ensure_folder(("A",))
@@ -1122,8 +1071,7 @@ class TestBlockedRunDoesNotClaimToHaveChecked:
 
 
 class TestTransientFailures:
-    """GitHub builds codeload archives on demand and the big ones time out.
-    Reported live: HTTP 504 on a first full-library sync."""
+    """GitHub timeouts, e.g. a 504 on a big archive."""
 
     def _http_error(self, code):
         import urllib.error
@@ -1188,8 +1136,7 @@ class TestTransientFailures:
 
     def test_a_dead_archive_falls_back_to_individual_files(self, small_tree,
                                                            src, tmp_path):
-        """The whole point: a first sync that cannot get the tarball must still
-        finish, not abort the run."""
+        """If the archive fails, download the files one by one."""
         class NoTarball(FakeTransport):
             def get_bytes(self, url, on_chunk=None):
                 if "codeload" in url:
@@ -1206,8 +1153,7 @@ class TestTransientFailures:
 
     def test_cancelling_during_the_archive_is_not_treated_as_a_failure(
             self, small_tree, src, tmp_path):
-        """Cancel must stay cancel; falling back would restart the download
-        the user just stopped."""
+        """Cancel must not trigger the fallback download."""
         class Cancelling(FakeTransport):
             def get_bytes(self, url, on_chunk=None):
                 if "codeload" in url:
@@ -1222,8 +1168,7 @@ class TestTransientFailures:
 
 
 class TestDownloadProgress:
-    """A 2.2 GB archive is minutes of waiting. The dialog must show it moving,
-    or the only honest reading is 'frozen'."""
+    """The progress bar must move during a long download."""
 
     def test_archive_progress_reports_bytes_and_advances(self, src, tmp_path):
         seen = []
@@ -1258,15 +1203,13 @@ class TestDownloadProgress:
         assert during, f"no byte-level progress reported: {seen}"
         assert " of " in during[0][2] and "B" in during[0][2], during[0][2]
         assert "%" not in during[0][2], "a % would show through Fusion's escape"
-        # the bar must actually move, not sit at zero for the whole download
+        # the bar must move
         indexes = [i for i, _n, _l in during]
         assert indexes[0] < indexes[-1], f"progress index never advanced: {indexes}"
         assert indexes[-1] == 8
 
     def test_the_label_survives_the_trip_through_sync(self, src, tmp_path):
-        """The bug was not in fetch_files - it computed the percentage fine.
-        apply_plan wrapped on_progress and rewrote the label, so the byte
-        count never reached the dialog. Assert on what the CALLER sees."""
+        """Checks the label the add-in actually receives, not just fetch_files."""
         seen = []
 
         class Chunked(FakeTransport):
@@ -1311,8 +1254,7 @@ class TestDownloadProgress:
 
 
 class TestSettleDeadlineScales:
-    """A flat 300s left the tail of a 1,198-file batch unresolved: everything
-    is fired at once, so the last file waits behind all the others."""
+    """The wait for uploads grows with the number of files."""
 
     def test_deadline_grows_with_the_batch(self, src, tmp_path, monkeypatch):
         seen = {}
@@ -1359,8 +1301,7 @@ class TestSettleDeadlineScales:
 
 
 class TestDownloadStrategy:
-    """The archive is always the WHOLE repository. Counting files alone made a
-    150-file delta pull 2.2 GB."""
+    """The archive is the whole repo, so it's only used for most of the repo."""
 
     FULL = 2_362_232_012
 
@@ -1372,8 +1313,7 @@ class TestDownloadStrategy:
         assert gh.should_use_tarball(1198, 100, self.FULL, self.FULL)
 
     def test_unknown_sizes_keep_the_old_rule(self):
-        """Guessing low would be the expensive mistake, so with no sizes the
-        file count still decides."""
+        """Without sizes, fall back to counting files."""
         assert gh.should_use_tarball(150, 100, 0, 0)
         assert not gh.should_use_tarball(25, 100, 0, 0)
 
@@ -1441,9 +1381,7 @@ class TestParallelDownloads:
 
 
 class TestAddNeverLandsOnATakenName:
-    """The manifest only knows about files Detent placed. A file the user
-    imported by hand is invisible to it, and Fusion accepts a second one of
-    the same name without a word."""
+    """New files must not be uploaded onto a name that's already in the folder."""
 
     def test_a_hand_placed_file_is_not_doubled(self, src, tmp_path):
         tree = {"A/Part.f3d": "sha1"}
@@ -1476,9 +1414,7 @@ class TestAddNeverLandsOnATakenName:
         assert panel.duplicates() == {}
 
     def test_a_refused_file_is_not_recorded_so_it_can_land_later(self, src, tmp_path):
-        """Nothing was uploaded, so nothing may be written to the manifest -
-        otherwise the file is locked out for good once the obstruction is
-        cleared."""
+        """A refused file isn't recorded, so it uploads once the name is free."""
         tree = {"A/Part.f3d": "sha1"}
         panel = FakeDataPanel()
         folder = panel.ensure_folder(("A",))
@@ -1510,8 +1446,7 @@ class TestAddNeverLandsOnATakenName:
 
     def test_a_re_placement_is_not_refused_by_its_own_name(self, small_tree, src,
                                                            tmp_path):
-        """Drift recovery must keep working. Re-places are routed past this
-        guard because detect_drift has already checked their names."""
+        """Putting back a deleted file still works."""
         panel = FakeDataPanel()
         mpath = str(tmp_path / "m.json")
         S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
@@ -1526,8 +1461,7 @@ class TestAddNeverLandsOnATakenName:
         assert panel.duplicates() == {}
 
     def test_an_unlistable_folder_does_not_block_a_first_sync(self, src, tmp_path):
-        """Best effort: a panel that cannot be read must not stop a legitimate
-        sync. settle is the backstop for what this guard cannot see."""
+        """If the folder can't be listed, the check is skipped, not failed."""
         tree = {"A/Part.f3d": "sha1"}
 
         class Blind(FakeDataPanel):
@@ -1546,9 +1480,8 @@ class TestAddNeverLandsOnATakenName:
 
 
 class TestFolderChangeIsVisible:
-    """Pointing a source at a different folder strands every recorded file:
-    they all read as missing from the new location and a sync uploads a
-    second copy of the library. Detent cannot delete the first."""
+    """Changing the target folder uploads everything again, so it must be
+    caught."""
 
     def test_no_change_is_no_impact(self):
         m = Manifest(source_id="s", repo="o/r")
@@ -1571,7 +1504,7 @@ class TestFolderChangeIsVisible:
         assert S.folder_change_impact(Manifest(source_id="s", repo="o/r"), "A", "B") == 0
 
     def test_the_damage_it_describes_is_real(self, src, tmp_path):
-        """What the warning is warning about: same manifest, new folder."""
+        """Same manifest, new folder: every file is uploaded again."""
         tree = {f"A/p{i}.f3d": f"s{i}" for i in range(9)}
         mpath = str(tmp_path / "m.json")
         old_folder, new_folder = FakeDataPanel(), FakeDataPanel()
@@ -1586,8 +1519,7 @@ class TestFolderChangeIsVisible:
 
 
 class TestPreviewAndWriteAgreeOnTheCommit:
-    """`ref` defaults to a branch. Resolving it twice lets the user approve
-    one file list and upload another."""
+    """The upload must use the same commit as the preview."""
 
     class Moving(FakeTransport):
         def get_json(self, url):
@@ -1613,8 +1545,7 @@ class TestPreviewAndWriteAgreeOnTheCommit:
             "uploaded against a commit the user never saw")
 
     def test_without_the_pin_the_two_runs_disagree(self, src, tmp_path):
-        """The bug, kept as evidence: unpinned, the write lands on a different
-        commit than the preview the user approved."""
+        """Without pinning, the upload uses a newer commit than the preview."""
         tr = self.Moving({"A/x.f3d": "s"}, commit="c0")
         panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
 
@@ -1631,9 +1562,7 @@ class TestPreviewAndWriteAgreeOnTheCommit:
 
 
 class TestSubpathKeepsBlobSizes:
-    """A plain dict comprehension drops Tree.sizes, and sync() then reads
-    total_bytes as 0 - which sends should_use_tarball back to counting files
-    and pulls the whole 2.2 GB repository for a small delta."""
+    """Filtering by subpath must keep the file sizes."""
 
     payload = {"truncated": False, "tree": [
         {"path": "cad/a.f3d", "type": "blob", "sha": "s1", "size": 1000},
@@ -1663,7 +1592,6 @@ class TestSubpathKeepsBlobSizes:
         assert tree.total_bytes == 3010
 
     def test_a_subpath_delta_does_not_reach_for_the_archive(self):
-        """The decision the sizes exist to inform."""
         tree = gh.fetch_tree(gh.Source("o/r", "main", "cad"), self.T())
         assert not gh.should_use_tarball(
             150, threshold=100,
@@ -1672,19 +1600,16 @@ class TestSubpathKeepsBlobSizes:
 
 
 class TestProgressNeverOvershoots:
-    """The dialog is created with a maximum and core reports against a total.
-    When they disagree the bar lies - it sat pinned full for every drift
-    recovery, which is the run users watch most anxiously."""
+    """The progress bar maximum must match what's actually sent."""
 
     def test_the_addin_sizes_the_bar_by_everything_it_will_send(self):
-        """add is not the total. to_place is add + missing, and a re-placement
-        run has add == 0."""
+        """The bar counts new and missing files."""
         import ast
         import re
         text = open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "Detent.py"), encoding="utf-8").read()
-        ast.parse(text)                      # it still has to be valid Python
+        ast.parse(text)                      # still valid Python
         shows = re.findall(r"progress\.show\([^)]*\)", text)
         upload_bar = [s for s in shows if "Starting" in s]
         assert len(upload_bar) == 1, shows
@@ -1692,7 +1617,7 @@ class TestProgressNeverOvershoots:
         assert "plan.add" not in upload_bar[0], upload_bar[0]
 
     def test_the_counter_counts_sends_not_positions(self, src, tmp_path):
-        """Skipped entries must not run the counter past its own total."""
+        """Skipped files don't advance the counter."""
         tree = {"A/Part.f3d": "s1", "A/Other.f3d": "s2", "A/Third.f3d": "s3"}
         panel = FakeDataPanel()
         panel.upload(panel.ensure_folder(("A",)), "/tmp/x", "Part")
@@ -1716,9 +1641,7 @@ class TestProgressNeverOvershoots:
 
 
 class TestTheConfirmationCountsWhatWillBeSent:
-    """The 'Upload N file(s)?' prompt used to count plan.add. A run also
-    re-places plan.missing, so a drift recovery went up with no prompt at all
-    and a mixed run asked about 5 files then sent 50."""
+    """The upload prompt counts new and missing files."""
 
     def _plan(self, add=0, missing=0):
         p = PL.Plan()
@@ -1747,7 +1670,7 @@ class TestTheConfirmationCountsWhatWillBeSent:
         assert S.upload_count(self._plan(add=5), rep) == 0
 
     def test_the_addin_asks_using_that_count(self):
-        """Source guard: the dialog must not go back to counting plan.add."""
+        """The add-in must use upload_count, not plan.add."""
         import re
         text = open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -1758,8 +1681,7 @@ class TestTheConfirmationCountsWhatWillBeSent:
             "the confirmation is gating on plan.add again"
 
     def test_changed_files_are_named_not_just_counted(self, src, tmp_path):
-        """Detent cannot update these, so the list is the only thing it can
-        offer. A bare count leaves the user with nothing to act on."""
+        """The preview lists changed files by name."""
         import re
         text = open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

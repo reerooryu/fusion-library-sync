@@ -1,6 +1,6 @@
-"""Add-in entry point: Utilities > ADD-INS > Sync Library.
+"""Detent add-in: Utilities > ADD-INS > Sync Library.
 
-Presentation only. The risky logic lives in detent_core/ and is tested
+Dialogs and progress only. The sync logic is in detent_core/, which is tested
 without Fusion.
 """
 
@@ -17,15 +17,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-# Fusion re-executes THIS file on every Run but keeps sys.modules, so the
-# package stays at whatever version was first imported into the process.
-# Install an update, Stop, Run, and a new Detent.py calls a stale core - which
-# surfaces as an AttributeError on a field that plainly exists on disk. Only a
-# full Fusion restart cleared it. Drop the package before importing it.
-#
-# The package is detent_core, not core: every add-in shares one interpreter, so
-# a generic name would collide with someone else's - and this loop would then
-# be deleting THEIR modules out from under them.
+# Fusion reruns this file on Run but keeps imported modules, so an update
+# wouldn't load until Fusion restarts. Remove the package so it re-imports.
 for _stale in [n for n in list(sys.modules)
                if n == "detent_core" or n.startswith("detent_core.")]:
     del sys.modules[_stale]
@@ -48,12 +41,11 @@ CONFIG_PATH = os.path.join(_HERE, "config.json")
 STATE_DIR = os.path.join(_HERE, "state")
 LOG_PATH = os.path.join(STATE_DIR, "detent.log")
 
-_handlers = []      # Fusion garbage-collects handlers that aren't referenced
+_handlers = []      # keep references, or Fusion drops the handlers
 
 
 def _log(text):
-    """Fusion message boxes truncate, and they ate the one line that mattered:
-    the exception type. Always write the full text somewhere readable."""
+    """Write the full error to state/detent.log. Message boxes cut it short."""
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(LOG_PATH, "a", encoding="utf-8") as fh:
@@ -71,12 +63,8 @@ def _fail(ui, what):
 
 
 def _done(progress):
-    """Close a progress dialog and let Fusion actually repaint.
-
-    hide() queues the close; the window stays on screen until the event loop
-    runs. Showing a modal message box in that gap leaves the progress dialog
-    visible behind it, which looks like it never closed.
-    """
+    """Close a progress dialog. doEvents() makes it actually disappear before
+    the next message box opens."""
     try:
         progress.hide()
         adsk.doEvents()
@@ -165,9 +153,7 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
 
 class InputChangedHandler(adsk.core.InputChangedEventHandler):
-    """Folder and note must follow the Library dropdown. Without this, picking
-    a second library and pressing OK writes the first library's folder into
-    it - and the two libraries land on top of each other."""
+    """Update Folder and the note when a different library is picked."""
 
     def __init__(self, cfg):
         super().__init__()
@@ -189,8 +175,7 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
 
 
 def _version_line() -> str:
-    """A mismatch means Fusion served a cached package. Say so here rather
-    than letting it surface later as a missing attribute."""
+    """Warn if Fusion is running an old cached copy of detent_core."""
     if CORE_VERSION == VERSION:
         return f"Detent {VERSION}"
     return (f"Detent {VERSION} but core {CORE_VERSION} - STALE MODULE. "
@@ -236,11 +221,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
             os.makedirs(STATE_DIR, exist_ok=True)
             manifest_path = os.path.join(STATE_DIR, source.manifest_name)
 
-            # Moving a source to a new folder makes every manifest entry read
-            # as missing from the new location, and a sync then uploads a
-            # second copy of the whole library. Detent cannot delete the first.
-            # It used to happen on OK - including OK on Preview, which writes
-            # nothing else - from a one-character edit in a text box.
+            # A new folder means a second full copy of the library. Ask first.
             stranded = S.folder_change_impact(
                 M.Manifest.load(manifest_path), source.folder_path, folder_path)
             if stranded and not _confirm_folder_change(
@@ -248,8 +229,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 return
 
             source.folder_path = folder_path
-            # Persist only for an action that writes. A preview that changes
-            # nothing in Fusion should not rewrite the config either.
+            # Preview changes nothing, including config.json.
             if not action.startswith("Preview"):
                 cfg.save(CONFIG_PATH)
 
@@ -288,8 +268,8 @@ def _pick_project(name, log):
 
 
 def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
-    """Always plan first. Uploading requires a second, explicit yes; a sync
-    that finds nothing still runs, so the manifest records the check."""
+    """Preview first, then ask before uploading. A sync with nothing to upload
+    still runs, so the manifest records the check."""
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = False
     progress.show("Detent", "Reading %v...", 0, 1)
@@ -303,8 +283,7 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
 
     summary = _plan_text(plan, source) if not plan.is_empty else "Everything is up to date."
     if preview.occupied:
-        # Say it here rather than after the upload. These are refused, and the
-        # count in the plan above still includes them.
+        # Warn now, before the upload. These are counted in the plan above.
         summary += ("\n\nNot uploadable - a file of that name is already in "
                     f"the folder and Detent did not put it there ({len(preview.occupied)}):\n")
         summary += "\n".join(f"    {_short(p)}" for p, _n in preview.occupied[:5])
@@ -314,14 +293,7 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
         ui.messageBox(summary, "Detent - preview")
         return
 
-    # Anything to upload needs an explicit yes. A run with nothing to upload
-    # still goes through the write path below: it reconciles interrupted
-    # uploads and records that this check happened, which is exactly the case
-    # the manifest header used to miss.
-    #
-    # Count what will actually be sent, not just the new files. A re-placement
-    # run uploads too, and gating this on plan.add meant 45 files going up with
-    # no prompt at all.
+    # Ask before uploading, counting new and missing files.
     n = S.upload_count(plan, preview)
     if n:
         warn = ""
@@ -338,14 +310,11 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
 
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = True
-    # to_place, not add: a drift-recovery run has add == 0 and re-places
-    # dozens, and core reports progress against everything it will send. With
-    # add as the maximum the bar sat pinned full for the whole run.
+    # Sized by every file being sent, including missing ones.
     progress.show("Detent", "Starting...", 0, max(len(plan.to_place), 1))
 
     def on_progress(i, total, label):
-        # Returning False asks core to abort; it is how cancel reaches a
-        # long download or a slow upload.
+        # Returning False cancels the sync.
         if progress.wasCancelled:
             return False
         if label:
@@ -355,9 +324,7 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
         return True
 
     try:
-        # Pinned to the commit the preview above was computed from. `ref` is
-        # usually a branch, so resolving it a second time here could upload a
-        # different file list than the one the user just said yes to.
+        # Same commit as the preview, in case the branch moved since.
         _plan2, report = S.sync(src, manifest_path, panel, transport,
                                 source.include, source.exclude,
                                 dry_run=False, on_progress=on_progress,
@@ -433,8 +400,7 @@ def _plan_text(plan, source) -> str:
     if plan.inflight:
         lines.append(f"  ! {len(plan.inflight):5d}  interrupted, will reconcile")
     if plan.change:
-        # Detent cannot update these, so naming them is the only help it can
-        # give. A count alone leaves the user with no idea what to replace.
+        # Detent can't update these, so list them for the user.
         lines += ["", "Changed upstream - Detent cannot update these. Replace "
                       "them by hand if you want the new versions:"]
         lines += [f"    {_short(p)}" for p in plan.change[:8]]
@@ -454,8 +420,7 @@ def _plan_text(plan, source) -> str:
 
 
 def _short(path: str, width: int = 58) -> str:
-    """Fusion message boxes wrap long paths into soup. Keep the end, which is
-    the part that identifies the file."""
+    """Shorten a long path to its end, which is the part that names the file."""
     if len(path) <= width:
         return path
     return "..." + path[-(width - 3):]
@@ -509,7 +474,7 @@ def run(context):
         if panel and not panel.controls.itemById(CMD_ID):
             panel.controls.addCommand(cmd_def)
 
-        # Fail loudly at load, not later at an arbitrary attribute access.
+        # Warn at load if Fusion kept an old copy of detent_core.
         if CORE_VERSION != VERSION:
             ui.messageBox(
                 f"Detent {VERSION} is running against a cached "

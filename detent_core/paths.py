@@ -1,9 +1,8 @@
-"""Repo path -> Data Panel location.
+"""Repo path to Data Panel folder and file name.
 
-Names are preserved verbatim and Unicode is never normalised: folding U+201D
-to a straight quote would make the manifest key stop matching the tree, so
-every later sync would see a phantom change. Any alteration is reported - a
-silent rename is a future duplicate.
+Names are kept exactly, including Unicode. Normalising a character like
+U+201D would make the manifest stop matching the repo. Any change to a name is
+reported, because an unnoticed rename becomes a duplicate later.
 """
 
 from dataclasses import dataclass
@@ -11,21 +10,21 @@ from typing import List, Sequence, Tuple
 import posixpath
 import unicodedata
 
-# Conservative ceiling until Fusion's real limit is measured (spec section 11).
+# Safe limits until Fusion's real ones are measured.
 MAX_SEGMENT = 255
 MAX_PATH = 400
 
-# Characters no filesystem or Data Panel will take in a single segment.
+# Characters no file system allows in a name.
 _ILLEGAL = set('/\\\x00')
 
 
 @dataclass(frozen=True)
 class PanelPath:
     """Where a repo file goes in the Data Panel."""
-    repo_path: str                      # canonical key, extension included
-    folders: Tuple[str, ...]            # folder chain below the source root
-    name: str                           # display name, extension stripped
-    alterations: Tuple[str, ...] = ()   # non-empty => must appear in the report
+    repo_path: str                      # manifest key, with extension
+    folders: Tuple[str, ...]            # folders below the source root
+    name: str                           # display name, without extension
+    alterations: Tuple[str, ...] = ()   # changes made to the name, if any
 
     @property
     def altered(self) -> bool:
@@ -37,11 +36,11 @@ class PanelPath:
 
 
 class PathError(ValueError):
-    """The path cannot be represented in the Data Panel at all."""
+    """The path can't be used in the Data Panel."""
 
 
 def _clean_segment(seg: str, where: str, notes: List[str]) -> str:
-    """Only alterations Fusion actually forces."""
+    """Only make changes Fusion would force anyway."""
     original = seg
     if any(ch in _ILLEGAL for ch in seg):
         raise PathError(f"{where}: illegal character in segment {seg!r}")
@@ -50,7 +49,7 @@ def _clean_segment(seg: str, where: str, notes: List[str]) -> str:
         seg = ''.join(ch for ch in seg if unicodedata.category(ch) != 'Cc')
         notes.append(f"{where}: stripped control characters")
 
-    # Some hosts drop these silently; do it ourselves so the manifest is honest.
+    # Some systems drop these silently; do it here so the manifest matches.
     stripped = seg.rstrip(' .')
     if stripped != seg:
         seg = stripped
@@ -65,7 +64,7 @@ def _clean_segment(seg: str, where: str, notes: List[str]) -> str:
 
 
 def map_path(repo_path: str, subpath: str = "") -> PanelPath:
-    """`subpath` is stripped from the front so a source can sync a subtree."""
+    """`subpath` is removed from the front, to sync part of a repo."""
     if not repo_path or repo_path.endswith('/'):
         raise PathError(f"not a file path: {repo_path!r}")
 
@@ -89,7 +88,7 @@ def map_path(repo_path: str, subpath: str = "") -> PanelPath:
         _clean_segment(p, f"folder {i + 1}", notes) for i, p in enumerate(folder_parts)
     )
 
-    # Fusion supplies its own extension; the manifest still keys on repo_path.
+    # Fusion adds its own extension. The manifest still uses the full repo path.
     stem, dot, _ext = filename.rpartition('.')
     display = stem if dot else filename
     display = _clean_segment(display, "filename", notes)
@@ -106,9 +105,8 @@ def map_path(repo_path: str, subpath: str = "") -> PanelPath:
 
 
 def map_all(repo_paths: Sequence[str], subpath: str = ""):
-    """Returns (mapped, errors, collisions). A collision - two repo files
-    landing on one Data Panel name - must block the sync: that is how a
-    library silently loses a part."""
+    """Returns (mapped, errors, collisions). A collision means two repo files
+    would get the same Data Panel name, and must block the sync."""
     mapped: List[PanelPath] = []
     errors: List[Tuple[str, str]] = []
     seen: dict = {}

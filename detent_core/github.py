@@ -1,7 +1,7 @@
-"""GitHub source: resolve a ref, read its tree, fetch blobs.
+"""GitHub: resolve a ref, read the file tree, download files.
 
-Transport is injected so every path here is testable offline. Bootstrap pulls
-one tarball; deltas fetch individual files.
+The transport is passed in so tests run without a network. Large syncs
+download one archive; small ones download files individually.
 """
 
 from dataclasses import dataclass
@@ -20,21 +20,15 @@ API = "https://api.github.com"
 RAW = "https://raw.githubusercontent.com"
 CODELOAD = "https://codeload.github.com"
 
-# Above this many files, one tarball MAY beat N requests - but the archive is
-# always the whole repository, so it only wins when we want most of it. Asking
-# for 150 of 1,198 files used to pull all 2.2 GB.
+# The archive is always the whole repo, so only use it for 100+ files that
+# make up at least half the repo by size.
 TARBALL_THRESHOLD = 100
 TARBALL_FRACTION = 0.5
 
-# Parallel fetches for the per-file path. urllib opens a fresh connection per
-# request, so the wall clock here is dominated by round trips, not bandwidth;
-# eight in flight turns 1,198 sequential handshakes into 150 rounds. Kept
-# modest deliberately - this is someone's home connection, not a datacentre.
+# Parallel downloads for the per-file path. Kept low for home connections.
 DOWNLOAD_WORKERS = 8
 
-# GitHub builds a codeload archive on demand; for a 2.2 GB repository that
-# routinely times out at the edge. These are the statuses worth trying again -
-# a 404 or a 403 will never change.
+# Statuses worth retrying. A 404 or 403 won't change.
 RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 RETRIES = 4
 BACKOFF = 2.0          # seconds, doubling
@@ -46,15 +40,15 @@ class Transport(Protocol):
 
 
 class UrllibTransport:
-    """Default transport. No third-party dependencies - Fusion ships plain CPython."""
+    """Default transport. Standard library only, since Fusion ships plain Python."""
 
     def __init__(self, token: Optional[str] = None, timeout: int = 60,
                  retries: int = RETRIES, sleep=time.sleep):
         self.token = token
         self.timeout = timeout
         self.retries = retries
-        self._sleep = sleep          # injected so tests do not actually wait
-        self.attempts = 0            # observable: how many requests were made
+        self._sleep = sleep          # injectable so tests don't wait
+        self.attempts = 0            # request count, for tests
 
     def _req(self, url: str) -> urllib.request.Request:
         headers = {"User-Agent": "detent", "Accept": "application/vnd.github+json"}
@@ -63,12 +57,7 @@ class UrllibTransport:
         return urllib.request.Request(url, headers=headers)
 
     def _open(self, url):
-        """urlopen, retried on the failures that are worth retrying.
-
-        One 504 from codeload used to end a whole sync. Reported live on a
-        first full-library run, which is exactly when the archive is biggest
-        and the edge most likely to give up.
-        """
+        """urlopen, retrying timeouts, resets and server errors."""
         last = None
         for attempt in range(self.retries + 1):
             self.attempts += 1
@@ -79,7 +68,6 @@ class UrllibTransport:
                     raise
                 last = exc
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                # Connection reset, DNS blip, read timeout. Same treatment.
                 last = exc
             if attempt < self.retries:
                 self._sleep(BACKOFF * (2 ** attempt))
@@ -91,8 +79,8 @@ class UrllibTransport:
             return json.loads(r.read().decode("utf-8")), dict(r.headers)
 
     def get_bytes(self, url, on_chunk=None):
-        """on_chunk(received, total) is called as data arrives, so a caller on
-        a UI thread can pump events and stay cancellable."""
+        """on_chunk(received, total) is called as data arrives. Returning False
+        cancels."""
         with self._open(url) as r:
             if on_chunk is None:
                 return r.read()
@@ -118,8 +106,8 @@ class Cancelled(GitHubError):
 
 
 class TreeTruncated(GitHubError):
-    """GitHub truncates large trees silently. Read as complete, a truncated
-    tree reports every unlisted file as an orphan."""
+    """GitHub cut the tree short. Treating it as complete would make every
+    missing file look deleted."""
 
 
 @dataclass
@@ -130,13 +118,7 @@ class Source:
 
 
 class Tree(dict):
-    """{path: blob_sha}, carrying byte sizes alongside.
-
-    A dict subclass so every existing caller keeps treating it as the mapping
-    it always was; `.sizes` is extra. GitHub returns a size per blob and we
-    were throwing it away, which is why the tarball decision could only count
-    files and not weigh them.
-    """
+    """{path: blob_sha}, plus a size in bytes for each file in `.sizes`."""
 
     def __init__(self, *args, sizes=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -151,7 +133,7 @@ class Tree(dict):
 
 
 def parse_tree(payload: dict) -> Tree:
-    """{path: blob_sha} for blobs only. Raises if GitHub truncated the response."""
+    """Files only, not folders. Raises if GitHub truncated the response."""
     if payload.get("truncated"):
         raise TreeTruncated(
             "tree truncated by GitHub; repo too large for a single recursive read"
@@ -168,7 +150,7 @@ def parse_tree(payload: dict) -> Tree:
 
 
 def resolve_commit(src: Source, transport: Transport) -> str:
-    """Pin the ref to a commit SHA so a sync is reproducible mid-run."""
+    """The commit SHA for the ref, so the whole sync uses one version."""
     url = f"{API}/repos/{src.repo}/commits/{urllib.parse.quote(src.ref)}"
     payload, _ = transport.get_json(url)
     sha = payload.get("sha")
@@ -179,7 +161,7 @@ def resolve_commit(src: Source, transport: Transport) -> str:
 
 def fetch_tree(src: Source, transport: Transport,
                commit: Optional[str] = None) -> Tree:
-    """One request for every path and blob SHA in the repo."""
+    """Every file path and blob SHA in the repo, in one request."""
     url = (f"{API}/repos/{src.repo}/git/trees/"
            f"{urllib.parse.quote(commit or src.ref)}?recursive=1")
     payload, _ = transport.get_json(url)
@@ -187,10 +169,7 @@ def fetch_tree(src: Source, transport: Transport,
     if src.subpath:
         prefix = src.subpath.strip("/") + "/"
         kept = {p: s for p, s in tree.items() if p.startswith(prefix)}
-        # Rebuild a Tree, not a plain dict. A bare comprehension drops .sizes,
-        # and sync() then reads total_bytes as 0 through its getattr fallback -
-        # which sends should_use_tarball back to the file-count-only rule, the
-        # exact bug where a 150-file delta downloaded all 2.2 GB.
+        # Keep it a Tree so the sizes survive.
         tree = Tree(kept, sizes={p: n for p, n in tree.sizes.items() if p in kept})
     return tree
 
@@ -203,7 +182,7 @@ def raw_url(src: Source, path: str, commit: Optional[str] = None) -> str:
 
 def fetch_blob(src: Source, path: str, transport: Transport,
                commit: Optional[str] = None) -> bytes:
-    """raw.githubusercontent is not counted against the API rate limit."""
+    """raw.githubusercontent.com doesn't count against the API rate limit."""
     return transport.get_bytes(raw_url(src, path, commit))
 
 
@@ -213,12 +192,10 @@ def tarball_url(src: Source, commit: Optional[str] = None) -> str:
 
 def should_use_tarball(n_files: int, threshold: int = TARBALL_THRESHOLD,
                        want_bytes: int = 0, total_bytes: int = 0) -> bool:
-    """One archive, or N requests?
+    """Download the whole archive, or file by file?
 
-    The archive is always the ENTIRE repository, whatever we asked for, so it
-    only pays when the selection is most of the repo. Counting files alone made
-    a 150-file delta download 2.2 GB. When sizes are unknown the old file-count
-    rule stands, because guessing low would be the expensive mistake.
+    Archive only if there are enough files and they make up most of the repo.
+    Without sizes, fall back to counting files.
     """
     if n_files < threshold:
         return False
@@ -243,9 +220,8 @@ def human_duration(seconds: float) -> str:
     return f"{seconds / 3600:.1f} hours"
 
 
-# Uploads are fired, not waited on: the earlier 8-18 s figure was the cost of
-# blocking on a future that Fusion cannot resolve while blocked, not the cost
-# of the upload. This covers download plus fire plus settling.
+# Rough cost per file: download, start the upload, confirm it. Not measured
+# on a full sync.
 SECONDS_PER_UPLOAD = 2.0
 
 
@@ -258,7 +234,7 @@ def estimate(n_files: int, total_bytes: int = 0) -> str:
 
 
 def _safe_members(tar: tarfile.TarFile, dest: str):
-    """Reject traversal, absolute paths, links. Never trust an archive."""
+    """Skip links, and refuse any path that would land outside dest."""
     dest_abs = os.path.abspath(dest)
     for m in tar.getmembers():
         if m.issym() or m.islnk():
@@ -273,7 +249,7 @@ def _safe_members(tar: tarfile.TarFile, dest: str):
 
 def extract_tarball(data: bytes, dest: str,
                     wanted: Optional[Sequence[str]] = None) -> Dict[str, str]:
-    """Unpack a codeload tarball, stripping its top-level dir.
+    """Unpack a GitHub archive without its top-level folder.
     Returns {repo_path: local_path}."""
     want = set(wanted) if wanted is not None else None
     written: Dict[str, str] = {}
@@ -281,7 +257,7 @@ def extract_tarball(data: bytes, dest: str,
 
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         for m in _safe_members(tar, dest):
-            # codeload wraps everything in "<name>-<ref>/"
+            # GitHub wraps everything in "<name>-<ref>/".
             _, _, rel = m.name.partition("/")
             if not rel:
                 continue
@@ -304,24 +280,19 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
                 threshold: int = TARBALL_THRESHOLD,
                 want_bytes: int = 0, total_bytes: int = 0,
                 workers: int = 0) -> Tuple[Dict[str, str], List[Tuple[str, str]]]:
-    """Returns (fetched, failures). One unreachable file never aborts a run."""
+    """Returns (fetched, failures). One failed file doesn't stop the rest."""
     paths = list(paths)
     fetched: Dict[str, str] = {}
     failures: List[Tuple[str, str]] = []
 
     if should_use_tarball(len(paths), threshold, want_bytes, total_bytes):
         def chunk(got, total):
-            # The bar tracks bytes, scaled onto the file count, because that
-            # is the only real measure during a single large archive download.
-            # Reporting index 0 throughout left it frozen at "0/1198" with an
-            # empty bar for the whole 2.2 GB.
+            # Progress by bytes, scaled to the file count.
             if not on_progress:
                 return None
             if total:
                 i = len(paths) * got // total
-                # No percent sign: Detent.py escapes "%" to "%%" so a path
-                # cannot corrupt Fusion's %v/%m/%p format tokens, and the
-                # escape would show through here.
+                # No "%": Detent.py escapes it for Fusion's progress dialog.
                 label = (f"Downloading {human_bytes(got)} "
                          f"of {human_bytes(total)}")
             else:
@@ -332,10 +303,7 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
         except Cancelled:
             raise
         except Exception as exc:                     # noqa: BLE001
-            # GitHub builds the archive on demand and the big ones time out at
-            # the edge; one 504 used to end the run. Individual files come from
-            # a different host, are small, and are not rate limited - much
-            # slower, but it finishes.
+            # Big archives often time out. Fall back to downloading each file.
             if on_progress:
                 on_progress(0, len(paths),
                             f"archive failed ({type(exc).__name__}), "
@@ -357,9 +325,8 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
             w.write(blob)
         return out
 
-    # Downloads run in a pool; nothing here touches the Fusion API, which is
-    # the main thread's alone. Progress and cancellation stay on this thread,
-    # inside as_completed, so on_progress still pumps Fusion's event loop.
+    # Downloads run in threads. Progress and cancel stay on this thread, which
+    # is the only one allowed to touch Fusion.
     workers = max(1, min(workers or DOWNLOAD_WORKERS, len(paths)))
     done = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -377,7 +344,7 @@ def fetch_files(src: Source, paths: Sequence[str], dest: str,
                         f"Downloading {done}/{len(paths)}") is False:
                     raise Cancelled("download cancelled")
         except BaseException:
-            # Stop what has not started; the few in flight finish on their own.
+            # Cancel anything not started yet.
             for f in pending:
                 f.cancel()
             raise

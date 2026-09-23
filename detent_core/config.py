@@ -1,7 +1,6 @@
-"""Config: which libraries to sync, and where they go.
+"""config.json: which libraries to sync and where they go.
 
-JSON beside the add-in, hand-edited in v0.1. Ships with VEX-CAD preconfigured
-so the common case never involves pasting a repo URL.
+Created on first run with the VEX CAD library already set up.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -24,7 +23,7 @@ class ConfigError(ValueError):
 
 
 def normalise_repo(value: str) -> str:
-    """Accept 'owner/name' or any github.com URL people paste."""
+    """Accept 'owner/name' or a github.com URL."""
     v = (value or "").strip()
     if not v:
         raise ConfigError("empty repository")
@@ -46,8 +45,7 @@ class SourceConfig:
     include: List[str] = field(default_factory=lambda: ["**/*.f3d"])
     exclude: List[str] = field(default_factory=list)
     folder_path: str = ""                 # below the project root
-    # Walk the Data Panel each run to check the manifest is still true. Costs
-    # one listing per folder; without it, files deleted by hand stay invisible.
+    # Check the Data Panel each run for files deleted by hand.
     verify_placed: bool = True
 
     def __post_init__(self):
@@ -55,13 +53,8 @@ class SourceConfig:
         if not self.id:
             raise ConfigError("source needs an id")
         if self.subpath.strip("/"):
-            # paths.map_path takes a subpath, and adopt_existing passes it -
-            # but apply_plan, settle, reconcile_inflight and detect_drift do
-            # not. Setting one makes sync mirror the prefix into the Data
-            # Panel while adopt looks for it stripped, so adopt matches
-            # nothing, writes an empty manifest, and the next sync uploads a
-            # duplicate of the entire library. Refuse until it is threaded
-            # through everywhere.
+            # Sync and Adopt handle subpath differently, which would make Adopt
+            # match nothing and the next sync upload the whole library again.
             raise ConfigError(
                 f"subpath is not supported yet (source {self.id!r}); "
                 "narrow with include patterns instead, e.g. "
@@ -124,7 +117,7 @@ class Config:
 
     @classmethod
     def load_or_create(cls, path: str) -> "Config":
-        """First launch writes the defaults so the file is there to edit."""
+        """On first run, write the defaults so there's a file to edit."""
         if os.path.exists(path):
             return cls.load(path)
         cfg = default_config()

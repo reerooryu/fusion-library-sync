@@ -55,6 +55,7 @@ One line per commit, oldest first.
 - `docs(readme): describe the three actions and current limits`
 - `fix(ui): include re-placed files in the upload confirmation`
 - `docs: rewrite README, changelog and CLAUDE.md in plain language`
+- `docs: shorten code comments and docstrings`
 
 ## Push
 

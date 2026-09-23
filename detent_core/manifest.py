@@ -1,7 +1,7 @@
-"""Manifest: have I placed this path, and which cloud file is it?
+"""Manifest: which files Detent has placed, and which Fusion file each became.
 
-Identity is the lineage URN, never the display name - Fusion will hold three
-files with one name in a folder, each on its own lineage, without complaint.
+Files are tracked by lineage URN, not name, because Fusion allows duplicate
+names.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -14,10 +14,10 @@ import tempfile
 SCHEMA = 1
 
 # Entry states
-PLACED = "placed"      # uploaded by us, lineage known, blob known
-ADOPTED = "adopted"    # pre-existing file we claimed; blob from the release
-                       # the user named, or None if they did not know
-INFLIGHT = "inflight"  # upload started, completion unconfirmed
+PLACED = "placed"      # uploaded by Detent; lineage and blob known
+ADOPTED = "adopted"    # already there, claimed by Adopt; blob from the named
+                       # release, or None if no release was given
+INFLIGHT = "inflight"  # upload started, not yet confirmed
 
 
 def _now() -> str:
@@ -26,12 +26,12 @@ def _now() -> str:
 
 @dataclass
 class Entry:
-    blob: Optional[str] = None       # git blob SHA; None => content unverified
+    blob: Optional[str] = None       # git blob SHA; None means unverified
     lineage: Optional[str] = None    # urn:adsk.wipprod:dm.lineage:...
     version: Optional[int] = None
     state: str = INFLIGHT
     at: str = field(default_factory=_now)
-    placed_name: Optional[str] = None  # set only when it differs from the map
+    placed_name: Optional[str] = None  # only set if it differs from the mapped name
 
 
 @dataclass
@@ -54,9 +54,9 @@ class Manifest:
     def in_state(self, state: str):
         return {p: e for p, e in self.files.items() if e.state == state}
 
-    # ---- mutation ------------------------------------------------------
+    # ---- changes -------------------------------------------------------
     def mark_inflight(self, repo_path: str, placed_name: Optional[str] = None) -> None:
-        """Written BEFORE the upload, so a crash mid-upload is visible."""
+        """Called before an upload, so a crash leaves a record."""
         self.files[repo_path] = Entry(
             state=INFLIGHT, at=_now(), placed_name=placed_name
         )
@@ -73,21 +73,13 @@ class Manifest:
         self.files.pop(repo_path, None)
 
     def stamp(self, ref: str, commit: Optional[str]) -> None:
-        """Record which ref and commit this manifest was last reconciled
-        against, and when.
-
-        The header used to go stale three separate ways: synced_at was never
-        assigned at all, ref was fixed at creation so editing config.json left
-        it lying, and synced_commit only moved when a file happened to be
-        uploaded - so the steady state (nothing to add) never recorded that a
-        check had run. Stamping is the whole point of a check that finds
-        nothing.
-        """
+        """Record the ref, commit and time of the last sync. Called on every
+        sync, including ones with nothing to upload."""
         self.ref = ref
         self.synced_commit = commit
         self.synced_at = _now()
 
-    # ---- persistence ---------------------------------------------------
+    # ---- saving and loading --------------------------------------------
     def to_dict(self) -> dict:
         return {
             "schema": self.schema,
@@ -113,8 +105,8 @@ class Manifest:
         return m
 
     def save(self, path: str) -> None:
-        """Atomic, and called after every file - a crash must leave a manifest
-        that matches the cloud, or the next run re-uploads."""
+        """Atomic write. Called after every file, so a crash never leaves the
+        manifest behind what's in the cloud."""
         directory = os.path.dirname(os.path.abspath(path)) or "."
         os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
@@ -141,11 +133,10 @@ def adopt(source_id: str, repo: str, ref: str,
           tree_at_release: Dict[str, str],
           local: Dict[str, str],
           release_known: bool = True) -> "Manifest":
-    """Claim an existing library without uploading anything.
+    """Build a manifest for a library the user already has. Uploads nothing.
 
-    Adopting against the named release rather than HEAD is the point: a user on
-    v2.0.3 recorded with today's hashes would look current and never update.
-    release_known=False records blob=None rather than guessing.
+    Blobs come from the release the user named, not the latest one. Otherwise
+    an old library would look up to date. release_known=False records no blob.
     """
     m = Manifest(source_id=source_id, repo=repo, ref=ref)
     for repo_path, lineage in local.items():

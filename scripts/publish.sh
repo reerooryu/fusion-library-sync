@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
-# Tag every shipped state and publish it as a GitHub release.
-#
-# Release notes come from CHANGELOG.md, so there is one source of truth: each
-# release body is that version's section, verbatim. Edit the changelog, not
-# this script.
-#
-# Safe to re-run. Existing tags and releases are left alone, and a tag that
-# already points somewhere unexpected is reported rather than moved.
+# Tag each release and publish it on GitHub. Release notes come from
+# CHANGELOG.md. Safe to re-run: existing tags aren't moved without --retag.
 #
 #   ./scripts/publish.sh          show what would happen
 #   ./scripts/publish.sh --go     do it
@@ -20,11 +14,9 @@ PRINT=0
 for a in "$@"; do
   case "$a" in
     --go) DRY=0 ;;
-    # Tags pushed before a history rewrite still point into the old, orphaned
-    # commits - which is also what keeps GitHub from ever collecting them.
-    # --retag moves them onto the rewritten history and force-pushes.
+    # Move existing tags to the commits in the map, and force-push them.
     --retag) RETAG=1 ;;
-    # Dump every release body to stdout and stop. Nothing is tagged or pushed.
+    # Print every release body and stop. Changes nothing.
     --print-notes) PRINT=1 ;;
     *) echo "unknown option: $a"; exit 1 ;;
   esac
@@ -32,12 +24,8 @@ done
 
 # tag<TAB>commit subject<TAB>prerelease
 #
-# Commits are found by SUBJECT, not SHA. Reconciling this repo with GitHub
-# rewrites every SHA, and a map of hashes would quietly point at abandoned
-# commits after the first rebase. Subjects survive rebase, cherry-pick and
-# merge. They are matched exactly, against the current branch only.
-#
-# "HEAD" means whatever is checked out - so run this from the release commit.
+# Commits are matched by subject, not SHA, because SHAs change on rebase.
+# "HEAD" is the checked-out commit, so run this from the release commit.
 MAP=$(cat <<'MAPEOF'
 v0.1.0	chore: version 0.1	yes
 v0.1.1	fix(github): stream tarball download with progress and cancellation	yes
@@ -63,17 +51,14 @@ MAPEOF
 
 say() { printf '%s\n' "$*"; }
 
-# A prerelease badge is easy to miss on a list of twelve. Broken releases say
-# so in the title, where nobody can scroll past it.
+# Broken releases get "(broken)" in the title.
 label() {  # $1 tag, $2 title, $3 prerelease
   if [ "$3" = "yes" ]; then printf '%s (broken) — %s' "$1" "$2"
   else printf '%s — %s' "$1" "$2"; fi
 }
 run() { if [ "$DRY" = 1 ]; then say "  would: $*"; else "$@"; fi; }
 
-# GitHub's own "What's Changed" list, built from the commits in the range.
-# Generated rather than written down: it uses the repo's real SHAs, so it
-# survives every history rewrite without anyone editing a list by hand.
+# "What's Changed" list, built from the commits since the previous tag.
 slug() {
   git remote get-url origin 2>/dev/null \
     | sed -E 's#.*github\.com[:/]##; s#\.git$##' \
@@ -93,14 +78,9 @@ whats_changed() {  # $1 previous tag (may be empty), $2 this tag
   fi
 }
 
-# Build the installable add-in for a tag, from that tag's own tree. Every
-# release carries its own artifact so a tag is reproducible on its own; the
-# installer only ever fetches releases/latest/download, which resolves to the
-# newest NON-prerelease - so the broken ones are never what anyone installs.
-#
-# Two formats, same contents. install.sh takes the .tgz; the .zip exists
-# because Windows Explorer opens a zip with no tools and cannot open a .tgz at
-# all, and most people installing this are on Windows without a shell.
+# Build Detent.tgz (for install.sh) and Detent.zip (for Windows) from a tag.
+# install.sh fetches the latest non-prerelease, so broken releases are never
+# installed.
 build_asset() {  # $1 tag, $2 outfile (.tgz); writes a .zip beside it
   local pkg=""
   for cand in detent_core core; do
@@ -125,8 +105,7 @@ git rev-parse --verify HEAD >/dev/null
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# Pull one version's heading and body out of CHANGELOG.md into $WORK/{title,body}.
-# The body goes through a file, never a shell variable - it is arbitrary markdown.
+# Copy one version's title and notes from CHANGELOG.md into $WORK/{title,body}.
 section() {
   python3 - "$1" "$WORK" <<'PYEOF'
 import os, re, sys
@@ -143,7 +122,7 @@ with open(os.path.join(work, "body"), "w", encoding="utf-8") as fh:
 PYEOF
 }
 
-# Exactly one commit on this branch with this subject, or refuse to guess.
+# The one commit with this subject. Fails if there are none or several.
 resolve() {
   if [ "$1" = "HEAD" ]; then git rev-parse --verify HEAD; return; fi
   local hits
@@ -208,7 +187,7 @@ say ""
 say "== push"
 run git push origin HEAD
 if [ "$MOVED" = 1 ]; then
-  # Moved tags need force; a plain push silently leaves the remote's old one.
+  # Moved tags need a force-push.
   run git push --force origin --tags
 else
   run git push origin --tags
@@ -237,8 +216,7 @@ while IFS=$'\t' read -r tag commit pre; do
   fi
 
   if [ "$exists" = yes ]; then
-    # CHANGELOG.md is the source of truth, so an existing release is brought
-    # into line with it rather than left carrying whatever it shipped with.
+    # Existing releases are updated to match CHANGELOG.md.
     say "  ~  $tag  update  \"$text\"  $edit_flag"
     if [ "$DRY" = 0 ]; then
       gh release edit "$tag" --title "$text" \
