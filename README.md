@@ -97,11 +97,11 @@ only moves the difference on future releases.
 
 From then on, use **Sync now** for every future release.
 
-> **Do not point `Sync now` at a folder that already has files in it without
-> adopting first.** Detent will refuse to upload over a name it did not place
-> and report them as `NAME TAKEN`. That refusal is deliberate — Fusion accepts
-> two files of the same name in one folder without warning, and you would not
-> find out for weeks.
+> **Don't point `Sync now` at a folder that already has the library in it
+> without adopting first.** Detent will refuse those files and list them as
+> `NAME TAKEN`. That is it working, not failing. Fusion lets you put two files
+> with the same name in one folder and says nothing, and you usually don't
+> notice until a part stops updating weeks later.
 
 # Updating
 
@@ -115,26 +115,58 @@ top, replacing files. macOS: re-run the `curl` line. Your `config.json` and
 If the dialog ever says `STALE MODULE`, restart Fusion. That means Fusion
 served a cached copy of the old version.
 
+# What the three actions are for
+
+**Preview changes** tells you what would happen. It changes nothing.
+
+**Sync now** adds the files you are missing. It runs a preview first and shows
+it to you, then asks before uploading anything.
+
+**Adopt existing library** tells Detent which files you already have. It
+uploads nothing. You do this once, not every time.
+
+Pick by what you actually want:
+
+| What you want | Action |
+|---|---|
+| I already have the library and want Detent to take it from here | Adopt, once |
+| I want the library and don't have it | Sync now |
+| A new release came out and I want it | Sync now |
+| Has anything changed in the repo? | Preview changes |
+| Did someone delete files from my library? | Preview changes |
+| How big is this going to be before I commit to it? | Preview changes |
+
+You don't need to run Preview before every sync. Sync now already does one and
+shows it to you. Preview is for when you only want to look.
+
+# What Detent does not do yet
+
+**It adds files. It does not update files that changed.**
+
+If a release changes a file you already have, Detent lists it as "changed
+upstream" and leaves it alone. You keep the old version. To get the new one,
+download that file from the repo and replace it yourself.
+
+So a release that only adds parts syncs completely. A release that also edits
+existing parts syncs the new ones and skips the edits. The preview tells you
+which is which before you start.
+
+It also cannot delete. If a file is removed from the repo, Detent says so and
+leaves your copy alone.
+
 # The dialog, field by field
 
 | | |
 |---|---|
-| **Library** | Which configured source to sync. VEX-CAD ships preconfigured. |
-| **Project** | The Fusion project to sync into. |
-| **Folder** | Folder inside that project. Created if it does not exist. |
+| **Library** | Which library to sync. VEX-CAD is already set up. |
+| **Project** | The Fusion project to put it in. |
+| **Folder** | Folder inside that project. Created if it doesn't exist. |
 | **Action** | Preview changes, Sync now, or Adopt existing library. |
-| **Installed release** | Only used by Adopt. Ignored otherwise. |
+| **Installed release** | Only used by Adopt. Ignored the rest of the time. |
 
-- **Preview changes** — lists what would move. Writes nothing. Safe to run any
-  time.
-- **Sync now** — previews, asks, then uploads new files only. Never touches a
-  file it has already placed.
-- **Adopt existing library** — claims a library you already have, without
-  uploading anything.
-
-Changing **Folder** after a sync means Detent treats every file as missing from
-the new location and uploads a second copy there. It asks first, and it cannot
-delete the old copies.
+If you change **Folder** after a sync, Detent sees an empty folder and uploads
+a fresh copy of everything into it. Your old copy stays where it was, because
+Detent can't delete it. It warns you and asks first.
 
 ## Sync less than the whole library
 
@@ -243,10 +275,17 @@ each fail the test written to catch it.
 
 ## Not yet done
 
-**Phase 2: in-place updates for files that changed upstream.** Today those are
-reported and skipped. The mechanism is proven against a live project — open the
-file, `BaseFeature.startEdit`, `updateBody`, `finishEdit`, `save`; same lineage,
-version increments — but nothing uses it yet.
+**Updating a file that changed upstream.** Detent reports these and skips them.
+Nothing in the code can update a file yet.
+
+The Fusion side of it has been checked and works: open the document,
+`BaseFeature.startEdit`, `updateBody`, `finishEdit`, `save` — the file keeps
+its lineage and the version number goes up. That was a one-off probe inside
+Fusion to confirm the API behaves. It has not been built into the add-in.
+
+What is still needed: fetching the new version, matching it to the existing
+document, doing the swap, recording the new blob, and deciding what to do when
+the user has edited that file themselves or the swap fails partway through.
 
 `subpath` is rejected in config until it is threaded through every call site.
 
