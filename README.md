@@ -3,54 +3,148 @@
 A Fusion 360 add-in that syncs a Git-hosted CAD library into your Data Panel,
 downloading only what changed.
 
-## 1. Install Detent
+Run Fusion 360 at least once before installing. The folder Detent installs into
+does not exist until you do.
 
-Launch Fusion 360 at least once so its add-in folder exists, then run:
+# Step 1 — Install
+
+## Windows
+
+1. Download **`Detent.zip`** from the
+   [latest release](https://github.com/reerooryu/fusion-library-sync/releases/latest).
+2. Press <kbd>Win</kbd>+<kbd>R</kbd>, paste this, press Enter:
+
+   ```
+   %APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns
+   ```
+
+3. Open the zip. Drag the **`Detent`** folder inside it into that window.
+
+You should end up with:
+
+```
+...\API\AddIns\Detent\Detent.py
+```
+
+If you see `AddIns\Detent\Detent\Detent.py`, you dragged one level too deep.
+Delete it and drag the `Detent` folder itself.
+
+## macOS
+
+Paste this into Terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/reerooryu/fusion-library-sync/main/install.sh | bash
 ```
 
-That unpacks the add-in into Fusion's AddIns folder. Nothing is synced yet, this only installs the tool.
+Or do it by hand: download `Detent.zip` from the
+[latest release](https://github.com/reerooryu/fusion-library-sync/releases/latest)
+and put the `Detent` folder in
 
-Then in Fusion:
+```
+~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns
+```
 
-1. **Utilities → ADD-INS → Scripts and Add-Ins**
-2. **Add-Ins** tab → select **Detent** → **Run**
-3. The command appears at **Utilities → ADD-INS → Sync Library**
+# Step 2 — Turn it on in Fusion
 
-The same command upgrades an existing install; `config.json` and `state/` are
-left alone. Every release has a `Detent.tgz` you can unpack by hand into
-`.../API/AddIns/Detent`.
+1. **Utilities** → **ADD-INS** → **Scripts and Add-Ins**
+2. Click the **Add-Ins** tab
+3. Select **Detent** → click **Run**
+4. Tick **Run on Startup** so you do not repeat this
 
-## 2. Use it
+The command now lives at **Utilities → ADD-INS → Sync Library**.
 
-Open **Utilities → ADD-INS → Sync Library**. The dialog asks for four things:
+Nothing has been downloaded or synced yet. Installing only puts the tool in
+place.
+
+# Step 3 — First run: pick A or B
+
+Read both. Pick the one that describes you.
+
+## A — You do not have the VEX library in Fusion yet (recommended)
+
+Also pick this if you have it but want a clean start — leave your old copy
+alone and let Detent build a fresh one in its own folder.
+
+1. **Utilities → ADD-INS → Sync Library**
+2. **Library**: `VEX CAD Library`
+3. **Project**: the Fusion project you want it in
+4. **Folder**: type a folder name that **does not exist yet**, e.g.
+   `VEX CAD Library`
+5. **Action**: `Preview changes`
+6. **OK** — read what it says it will do. Nothing is written.
+7. Open it again, set **Action** to `Sync now`, **OK**, then **Yes**.
+
+A first sync of the whole library is a 2.2 GB download and about 1,200
+uploads. It takes a long while, and Fusion is unresponsive during the download
+part. To test it on something small first, see
+[Sync less than the whole library](#sync-less-than-the-whole-library).
+
+## B — You already have the library and want to keep it
+
+Adopt tells Detent which files you already have, so it uploads nothing now and
+only moves the difference on future releases.
+
+1. **Utilities → ADD-INS → Sync Library**
+2. **Library**: `VEX CAD Library`
+3. **Project** and **Folder**: the project and folder your library is
+   **already in**
+4. **Action**: `Adopt existing library`
+5. **Installed release**: the version you currently have, e.g. `v2.0.5`.
+   Leave blank if you do not know — those files are then marked unverified
+   rather than assumed current.
+6. **OK** → check the matched count looks right → **Yes**
+
+From then on, use **Sync now** for every future release.
+
+> **Do not point `Sync now` at a folder that already has files in it without
+> adopting first.** Detent will refuse to upload over a name it did not place
+> and report them as `NAME TAKEN`. That refusal is deliberate — Fusion accepts
+> two files of the same name in one folder without warning, and you would not
+> find out for weeks.
+
+# Updating
+
+**Detent itself** — Windows: download `Detent.zip` again and drag it over the
+top, replacing files. macOS: re-run the `curl` line. Your `config.json` and
+`state/` are not in the archive, so your settings survive either way.
+
+**The library** — **Utilities → ADD-INS → Sync Library**, **Action**:
+`Sync now`. Detent works out what changed and uploads only that.
+
+If the dialog ever says `STALE MODULE`, restart Fusion. That means Fusion
+served a cached copy of the old version.
+
+# The dialog, field by field
 
 | | |
 |---|---|
 | **Library** | Which configured source to sync. VEX-CAD ships preconfigured. |
 | **Project** | The Fusion project to sync into. |
-| **Folder** | Folder inside that project. Created if absent. |
-| **Action** | Preview, Sync, or Adopt. |
+| **Folder** | Folder inside that project. Created if it does not exist. |
+| **Action** | Preview changes, Sync now, or Adopt existing library. |
+| **Installed release** | Only used by Adopt. Ignored otherwise. |
 
-**Start narrow.** A first sync of the whole VEX library is a 2.2 GB download.
-Edit `config.json` beside the add-in and point `include` at one folder, confirm
-it works, then widen:
+- **Preview changes** — lists what would move. Writes nothing. Safe to run any
+  time.
+- **Sync now** — previews, asks, then uploads new files only. Never touches a
+  file it has already placed.
+- **Adopt existing library** — claims a library you already have, without
+  uploading anything.
+
+Changing **Folder** after a sync means Detent treats every file as missing from
+the new location and uploads a second copy there. It asks first, and it cannot
+delete the old copies.
+
+## Sync less than the whole library
+
+Edit `config.json` next to the add-in and narrow `include`:
 
 ```json
 "include": ["Hardware/Screws/**/*.f3d"]
 ```
 
-The three actions:
-
-- **Preview changes** — lists what would move, with a size and time estimate.
-  Writes nothing. Always run this first.
-- **Sync now** — previews, asks, then uploads new files only.
-- **Adopt existing library** — already imported the library by hand? Adopt
-  claims it without uploading anything, so the next sync moves only the
-  difference. Give the release tag you installed (`v2.0.3`); leave it blank and
-  the files are recorded as unverified rather than assumed current.
+Confirm that works, then widen it back to `["**/*.f3d"]`.
 
 To sync a library other than VEX-CAD, add a source to `config.json`:
 

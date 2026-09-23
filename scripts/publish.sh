@@ -97,7 +97,11 @@ whats_changed() {  # $1 previous tag (may be empty), $2 this tag
 # release carries its own artifact so a tag is reproducible on its own; the
 # installer only ever fetches releases/latest/download, which resolves to the
 # newest NON-prerelease - so the broken ones are never what anyone installs.
-build_asset() {  # $1 tag, $2 outfile
+#
+# Two formats, same contents. install.sh takes the .tgz; the .zip exists
+# because Windows Explorer opens a zip with no tools and cannot open a .tgz at
+# all, and most people installing this are on Windows without a shell.
+build_asset() {  # $1 tag, $2 outfile (.tgz); writes a .zip beside it
   local pkg=""
   for cand in detent_core core; do
     if git cat-file -e "$1:$cand" 2>/dev/null; then pkg="$cand"; break; fi
@@ -105,6 +109,8 @@ build_asset() {  # $1 tag, $2 outfile
   [ -n "$pkg" ] || return 1
   git archive --format=tar.gz --prefix=Detent/ "$1" \
       Detent.py Detent.manifest "$pkg" > "$2" 2>/dev/null
+  git archive --format=zip --prefix=Detent/ "$1" \
+      Detent.py Detent.manifest "$pkg" > "${2%.tgz}.zip" 2>/dev/null
 }
 
 if ! command -v gh >/dev/null; then
@@ -237,13 +243,14 @@ while IFS=$'\t' read -r tag commit pre; do
     if [ "$DRY" = 0 ]; then
       gh release edit "$tag" --title "$text" \
         --notes-file "$WORK/body" $edit_flag
-      [ -n "$asset" ] && gh release upload "$tag" "$asset" --clobber
+      [ -n "$asset" ] && gh release upload "$tag" "$asset" "${asset%.tgz}.zip" --clobber
     fi
   else
     say "  +  $tag  create  \"$text\"  $create_flag"
     if [ "$DRY" = 0 ]; then
       gh release create "$tag" --title "$text" \
-        --notes-file "$WORK/body" $create_flag ${asset:+"$asset"}
+        --notes-file "$WORK/body" $create_flag \
+        ${asset:+"$asset" "${asset%.tgz}.zip"}
     fi
   fi
 done <<< "$MAP"

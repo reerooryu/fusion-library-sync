@@ -63,6 +63,13 @@ fixed before it is threaded through.
 pinned at full for the whole run. The counter also counted positions rather
 than sends, and could run past its own total.
 
+**Windows has an install path.** Every release now carries `Detent.zip`
+alongside `Detent.tgz` — identical contents, but Explorer opens a zip with no
+extra tools and cannot open a `.tgz` at all. `install.sh` needs a bash shell,
+which most Windows users do not have, and fails on WSL besides. The README
+leads with click-by-click instructions for both platforms, then branches on
+whether you already have the library: adopt it, or start clean in a new folder.
+
 152 tests.
 
 ## v0.4.0 — Faster downloads, and a dialog that behaves

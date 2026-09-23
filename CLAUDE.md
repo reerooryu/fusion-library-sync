@@ -89,6 +89,14 @@ One line per commit, oldest first.
   `publish.sh` was absorbed by the history rewrite, so `resolve()` found zero
   matches and the script refused to tag or push anything at all.
 
+- `feat(release): ship a zip asset and a click-by-click install guide` — every
+  release carries `Detent.zip` beside `Detent.tgz`; Explorer opens a zip with
+  no tools and cannot open a `.tgz`, and `install.sh` needs a bash shell most
+  Windows users do not have. The README now leads with per-platform install
+  steps, then branches: adopt an existing library, or start clean in a new
+  folder. Syncing into a folder that already has files is called out, because
+  v0.4.1 refuses those uploads rather than duplicating them.
+
 ## Push
 
 ```bash
