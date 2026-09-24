@@ -402,7 +402,7 @@ def _plan_text(plan, source, preview) -> str:
     if plan.unverified:
         lines.append(f"  ? {len(plan.unverified):5d}  unverified")
     if plan.inflight:
-        lines.append(f"  ! {len(plan.inflight):5d}  interrupted, will reconcile")
+        lines.append(f"  ! {len(plan.inflight):5d}  not confirmed yet, Sync now checks them")
     if plan.change:
         # Detent can't update these, so list them for the user.
         lines += ["", "Changed upstream - Detent cannot update these. Replace "

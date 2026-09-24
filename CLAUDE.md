@@ -8,6 +8,8 @@ Notes for working on Detent. Read before changing anything.
   it's gone. Fusion allows two files with the same name and doesn't warn.
 - Track files by lineage URN, never by name.
 - Check Fusion API behaviour with a probe script before relying on it.
+- A file's id is only its Fusion ID once it starts with `urn:`. While it
+  uploads, Fusion reports a local file path instead.
 - Every fix needs a test that fails without it. Revert the fix to confirm.
 - Commits: conventional commits with plain, technical names. Author and
   committer are `reerooryu <reerooryu@users.noreply.github.com>`. No trailers,
@@ -57,6 +59,7 @@ One line per commit, oldest first.
 - `docs: rewrite README, changelog and CLAUDE.md in plain language`
 - `docs: shorten code comments and docstrings`
 - `feat(sync): parallel downloads, folder check and download size` — v0.4.2.
+- `fix(sync): record only real Fusion IDs, and repair old records` — uploading files report a local path as their id.
 
 ## Push
 

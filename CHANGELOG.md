@@ -2,8 +2,13 @@
 
 Use the latest release. Older releases are kept for reference and marked broken.
 
-## v0.4.2 — Faster downloads and a folder check
+## v0.4.2 — Faster downloads, a folder check, and a tracking fix
 
+- Fixed: files that were still uploading could be recorded under a temporary
+  local path instead of their Fusion ID. The next Preview then listed them as
+  "missing but the name is taken". Detent now waits for the real ID. Records
+  made by older versions are repaired on the next Sync, without uploading
+  anything.
 - Downloads files 16 at a time instead of as one archive. On a home
   connection the full library took about 3 minutes instead of about 30.
 - If a lot of downloads fail, for example because GitHub is limiting

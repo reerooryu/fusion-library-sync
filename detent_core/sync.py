@@ -17,7 +17,7 @@ import time
 from . import github as gh
 from . import paths as P
 from . import plan as PL
-from .datapanel import DataPanel, UploadFailed
+from .datapanel import DataPanel, UploadFailed, is_fusion_id
 from .manifest import Manifest, ADOPTED, INFLIGHT, PLACED, adopt
 
 
@@ -119,9 +119,10 @@ def folder_change_impact(manifest: Optional[Manifest],
 
 def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
                        selected: Optional[Dict[str, str]] = None) -> None:
-    """Settle uploads interrupted by a crash by checking the folder.
+    """Confirm unconfirmed uploads by checking the folder.
 
-    One file with that name: it landed, record it. None: drop it so it's
+    One file with that name: it landed; record its Fusion ID. If it's still
+    uploading (no real ID yet), leave it for next time. None: drop it so it's
     retried. More than one: needs a human. `selected` supplies the blob.
     """
     for repo_path, entry in list(manifest.in_state(INFLIGHT).items()):
@@ -133,7 +134,9 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
         folder = panel.ensure_folder(pp.folders)
         hits = panel.find_by_name(folder, entry.placed_name or pp.name)
 
-        if len(hits) == 1:
+        if len(hits) == 1 and not is_fusion_id(hits[0].lineage):
+            report.reconciled.append((repo_path, "still uploading"))
+        elif len(hits) == 1:
             blob = entry.blob or (selected or {}).get(repo_path)
             manifest.record(repo_path, blob, hits[0].lineage,
                             hits[0].version, state=PLACED,
@@ -254,6 +257,8 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
             for repo_path, name in wanted:
                 hits = [h for h in present.get(name, [])
                         if h.lineage not in pre_existing]
+                if any(not is_fusion_id(h.lineage) for h in hits):
+                    continue                  # still uploading; check again next pass
                 if len(hits) == 1:
                     manifest.record(repo_path, selected.get(repo_path, ""),
                                     hits[0].lineage, hits[0].version, state=PLACED)
@@ -268,7 +273,7 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                         report.failures.append((repo_path, str(exc)))
                         pending.pop(repo_path, None)
                         continue
-                    if placed is not None:
+                    if placed is not None and is_fusion_id(placed.lineage):
                         manifest.record(repo_path, selected.get(repo_path, ""),
                                         placed.lineage, placed.version, state=PLACED)
                         report.added.append(repo_path)
@@ -289,7 +294,7 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                 report.failures.append((repo_path, str(exc)))
                 pending.pop(repo_path, None)
                 continue
-            if placed is not None:
+            if placed is not None and is_fusion_id(placed.lineage):
                 manifest.record(repo_path, selected.get(repo_path, ""),
                                 placed.lineage, placed.version, state=PLACED)
                 report.added.append(repo_path)
@@ -307,7 +312,8 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
 
     for repo_path in pending:
         report.failures.append(
-            (repo_path, f"upload unresolved after {max_wait:.0f}s"))
+            (repo_path, f"not confirmed after {max_wait:.0f}s - "
+                        "checked again on the next sync"))
 
 
 def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
@@ -469,6 +475,13 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
 
     selected = PL.select(tree, include, exclude)
 
+    # v0.4.1 and earlier could record a file's temporary upload path instead
+    # of its Fusion ID. Treat those as unconfirmed; the next sync confirms them.
+    for entry in manifest.files.values():
+        if entry.state in (PLACED, ADOPTED) and entry.lineage \
+                and not is_fusion_id(entry.lineage):
+            entry.state, entry.lineage = INFLIGHT, None
+
     pre = Report()
     if not dry_run:
         reconcile_inflight(manifest, panel, pre, selected)
@@ -519,7 +532,8 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
     by_name: Dict[Tuple[Tuple[str, ...], str], str] = {}
     for folders, files in panel_contents.items():
         for f in files:
-            by_name[(folders, f.name)] = f.lineage
+            if is_fusion_id(f.lineage):        # skip files still uploading
+                by_name[(folders, f.name)] = f.lineage
 
     for repo_path in tree:
         try:

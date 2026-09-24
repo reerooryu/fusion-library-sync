@@ -56,7 +56,7 @@ class Plan:
     change: List[str] = field(default_factory=list)      # blob differs: not handled yet
     orphan: List[str] = field(default_factory=list)      # removed upstream: can't delete
     unverified: List[str] = field(default_factory=list)  # adopted without a blob
-    inflight: List[str] = field(default_factory=list)    # interrupted upload
+    inflight: List[str] = field(default_factory=list)    # upload not confirmed yet
     missing: List[str] = field(default_factory=list)     # placed, but gone from the panel
     conflict: List[str] = field(default_factory=list)    # gone, and its name is taken
     # Commit the plan was built from, so the upload matches the preview.

@@ -593,7 +593,7 @@ class TestAsyncUpload:
                            settle_wait=2.0)
 
         assert rep.added == []
-        assert any("unresolved" in msg for _, msg in rep.failures)
+        assert any("not confirmed" in msg for _, msg in rep.failures)
 
     def test_lineage_comes_from_our_own_upload_not_a_name_match(
             self, src, tmp_path):
@@ -1810,3 +1810,162 @@ class TestDownloadSize:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "Detent.py"), encoding="utf-8").read()
         assert "gh.estimate(n, preview.download_bytes)" in text
+
+
+class TestOnlyRealFusionIdsAreRecorded:
+    """While a file uploads, Fusion reports a temporary local path as its id.
+    Recording that made Detent think its own files had been replaced once the
+    real ID appeared (found in testing, 23 Sep 2026)."""
+
+    TEMP = "/Users/tester/Library/Application Support/Autodesk/Q/abc.f3d"
+
+    def test_a_sync_never_records_a_temporary_path(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel(temp_ids=2)
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False,
+               settle_wait=30.0)
+        m = Manifest.load(mpath)
+        bad = {p: e.lineage for p, e in m.files.items()
+               if not str(e.lineage).startswith("urn:")}
+        assert bad == {}, f"recorded temporary ids: {bad}"
+        assert all(e.state == PLACED for e in m.files.values())
+
+    def test_the_reported_case_is_clean_afterwards(self, small_tree, src, tmp_path):
+        """Sync, then Preview: nothing missing, nothing taken, nothing untracked.
+        The real IDs appear between the sync and the Preview, as they did."""
+        panel = FakeDataPanel(temp_ids=1)
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False,
+               settle_wait=30.0)
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=True)
+        assert plan.is_empty, plan
+        assert rep.check.untracked == 0 and rep.check.duplicates == {}
+
+    def test_still_uploading_at_the_deadline_stays_unconfirmed(self, small_tree,
+                                                               src, tmp_path):
+        """If the real ID hasn't appeared in time, keep the file as unconfirmed.
+        Never record the temporary path, and never drop the entry."""
+        panel = FakeDataPanel(temp_ids=10_000)
+        mpath = str(tmp_path / "m.json")
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False, settle_wait=1.2)
+        m = Manifest.load(mpath)
+        assert len(m.files) == len(small_tree), "an entry was dropped"
+        assert all(e.state == INFLIGHT for e in m.files.values())
+        assert all(e.lineage is None for e in m.files.values())
+        assert rep.failures, "the unconfirmed files must be reported"
+
+    def test_the_next_sync_confirms_them_without_uploading(self, small_tree, src,
+                                                           tmp_path):
+        panel = FakeDataPanel(temp_ids=10_000)
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False,
+               settle_wait=1.2)
+        uploads = len(panel.uploads)
+        panel.temp_ids = 0                         # the uploads have finished
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False, settle_wait=1.2)
+        assert len(panel.uploads) == uploads, "uploaded again"
+        assert panel.duplicates() == {}
+        m = Manifest.load(mpath)
+        assert all(e.state == PLACED and e.lineage.startswith("urn:")
+                   for e in m.files.values())
+
+    def test_a_manifest_with_temporary_paths_heals(self, small_tree, src, tmp_path):
+        """The state v0.4.1 and earlier leave behind: placed entries whose
+        'lineage' is a local path. Preview must not call them taken, and Sync
+        must fix them without uploading."""
+        panel, mpath = FakeDataPanel(), str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        m = Manifest.load(mpath)
+        broken = sorted(m.files)[:3]
+        for p in broken:
+            m.files[p].lineage = self.TEMP.replace("abc", p.rsplit("/", 1)[1][:4])
+        m.save(mpath)
+        uploads = len(panel.uploads)
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=True)
+        assert plan.conflict == [] and plan.missing == []
+        assert sorted(plan.inflight) == broken
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False)
+        assert len(panel.uploads) == uploads, "uploaded again"
+        assert sorted(p for p, _why in rep.reconciled) == broken
+        m = Manifest.load(mpath)
+        assert all(e.state == PLACED and e.lineage.startswith("urn:")
+                   for e in m.files.values())
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=True)
+        assert rep.check.untracked == 0
+
+    def test_confirming_waits_for_the_real_id(self, src, tmp_path):
+        """reconcile_inflight must not record a file that's still uploading,
+        and must not drop it either."""
+        tree = {"A/Part.f3d": "s1"}
+        panel = FakeDataPanel(temp_ids=10_000)
+        panel.upload(panel.ensure_folder(("A",)), "/tmp/x", "Part")
+        m = Manifest(source_id="s", repo="o/r")
+        m.mark_inflight("A/Part.f3d", placed_name="Part")
+        rep = S.Report()
+        S.reconcile_inflight(m, panel, rep, tree)
+        e = m.get("A/Part.f3d")
+        assert e is not None and e.state == INFLIGHT and e.lineage is None
+
+    def test_adopt_skips_files_still_uploading(self, src, tmp_path):
+        tree = {"A/Part.f3d": "s1", "A/Other.f3d": "s2"}
+        panel = FakeDataPanel()
+        folder = panel.ensure_folder(("A",))
+        panel.upload(folder, "/tmp/x", "Part")
+        panel.upload(folder, "/tmp/x", "Other")
+        panel.temp_ids = 10_000
+        for pf in panel.contents[folder][1:]:
+            panel._seen[pf.lineage] = 0             # "Other" is still uploading
+        panel._seen[panel.contents[folder][0].lineage] = 10_000
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"), panel,
+                                    FakeTransport(tree), "v1", F3D)
+        assert sorted(m.files) == ["A/Part.f3d"]
+        assert all(e.lineage.startswith("urn:") for e in m.files.values())
+        assert stats["matched"] == 1
+
+
+class TestUploadHandleTemporaryIds:
+    """If Fusion's upload handle ever reports a temporary path, don't record it."""
+
+    TEMP = "/Users/tester/Library/Application Support/Autodesk/Q/part.f3d"
+
+    def test_the_handle_alone(self, src, tmp_path):
+        tmp = self.TEMP
+
+        class HandleOnly(FakeDataPanel):
+            def begin_upload(self, folder_id, local_path, name):
+                return {"name": name}            # nothing shows in the folder
+            def poll_upload(self, handle):
+                from detent_core.datapanel import PlacedFile
+                return PlacedFile(name=handle["name"], lineage=tmp)
+
+        panel, mpath = HandleOnly(), str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport({"A/Part.f3d": "s1"}), F3D,
+               dry_run=False, settle_wait=1.2)
+        e = Manifest.load(mpath).get("A/Part.f3d")
+        assert e.state == INFLIGHT and e.lineage is None, e
+
+    def test_the_handle_when_two_files_share_a_name(self, src, tmp_path):
+        tmp = self.TEMP
+
+        class TwoLand(FakeDataPanel):
+            def begin_upload(self, folder_id, local_path, name):
+                FakeDataPanel.upload(self, folder_id, local_path, name)
+                FakeDataPanel.upload(self, folder_id, local_path, name)
+                return {"name": name}
+            def poll_upload(self, handle):
+                from detent_core.datapanel import PlacedFile
+                return PlacedFile(name=handle["name"], lineage=tmp)
+
+        panel, mpath = TwoLand(), str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport({"A/Part.f3d": "s1"}), F3D,
+               dry_run=False, settle_wait=1.2)
+        e = Manifest.load(mpath).get("A/Part.f3d")
+        assert e.state == INFLIGHT and e.lineage is None, e

@@ -1,9 +1,13 @@
 """The Data Panel, behind an interface.
 
 FusionDataPanel is the real one; it imports adsk only when created, so this
-module works outside Fusion. FakeDataPanel is for tests, and copies Fusion's
-behaviour of silently keeping two files with the same name (checked on a live
-project, 6 Sep 2026), so the tests can catch duplicates.
+module works outside Fusion. FakeDataPanel is for tests, and copies two things
+Fusion does:
+
+- It keeps two files with the same name in one folder without a warning
+  (checked 6 Sep 2026).
+- While a file is still uploading, its id is a temporary local path, not its
+  Fusion ID. The real ID appears when the upload finishes (seen 23 Sep 2026).
 """
 
 from dataclasses import dataclass
@@ -20,6 +24,12 @@ class PlacedFile:
 
 class UploadFailed(RuntimeError):
     pass
+
+
+def is_fusion_id(value) -> bool:
+    """True for a real Fusion ID. While a file is uploading Fusion reports a
+    local file path instead, which changes when the upload finishes."""
+    return isinstance(value, str) and value.startswith("urn:")
 
 
 class DataPanel(Protocol):
@@ -39,8 +49,12 @@ class FakeDataPanel:
 
     def __init__(self, fail_on: Optional[Sequence[str]] = None,
                  crash_after: Optional[int] = None,
-                 deferred: bool = False):
+                 deferred: bool = False, temp_ids: int = 0):
         self.deferred = deferred
+        # A new file shows a temporary local path as its id for its first
+        # `temp_ids` listings, like Fusion while an upload is in progress.
+        self.temp_ids = temp_ids
+        self._seen: Dict[str, int] = {}
         self.folders: Dict[Tuple[str, ...], str] = {(): "folder:root"}
         self.contents: Dict[str, List[PlacedFile]] = {"folder:root": []}
         self._ids = itertools.count(1)
@@ -81,17 +95,30 @@ class FakeDataPanel:
         handle["polls"] += 1
         if self.deferred and handle["polls"] < 3:
             return None
-        return handle["placed"]
+        placed = handle["placed"]
+        if placed is not None and self._seen.get(placed.lineage, 0) < self.temp_ids:
+            return None                  # still uploading, like its listing says
+        return placed
+
+    def _as_seen(self, pf: PlacedFile) -> PlacedFile:
+        """The file as a listing shows it right now."""
+        n = self._seen.get(pf.lineage, 0)
+        self._seen[pf.lineage] = n + 1
+        if n < self.temp_ids:
+            tmp = "/Users/tester/Library/Application Support/Autodesk/Q/" + pf.lineage.rsplit(":", 1)[1] + ".f3d"
+            return PlacedFile(name=pf.name, lineage=tmp, version=pf.version)
+        return pf
 
     def list_folder(self, folder_id: str) -> List[PlacedFile]:
-        return list(self.contents.get(folder_id, []))
+        return [self._as_seen(f) for f in self.contents.get(folder_id, [])]
 
     def find_by_name(self, folder_id: str, name: str) -> List[PlacedFile]:
-        return [f for f in self.contents.get(folder_id, []) if f.name == name]
+        return [f for f in self.list_folder(folder_id) if f.name == name]
 
     def scan(self) -> Dict[Tuple[str, ...], List[PlacedFile]]:
         by_path = {v: k for k, v in self.folders.items()}
-        return {by_path[fid]: list(files) for fid, files in self.contents.items() if files}
+        return {by_path[fid]: self.list_folder(fid)
+                for fid, files in self.contents.items() if files}
 
     # -- test helpers --
     @property
