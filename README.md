@@ -6,6 +6,9 @@ project, and adds new parts when the library is updated.
 It comes set up for the [VEX CAD library](https://github.com/VEX-CAD/VEX-CAD-Fusion-360-Library),
 but works with any GitHub repo of Fusion files.
 
+A new release takes three clicks and under 3 minutes, instead of half an hour
+re-importing the whole library. See [Time saved](#time-saved).
+
 Open Fusion 360 at least once before you install. The folder Detent goes into
 doesn't exist until you do.
 
@@ -154,6 +157,56 @@ Add another entry under `sources` in `config.json`:
 change only when you decide.
 
 ---
+
+## Time saved
+
+Before Detent there were two ways to get a new release of the library:
+
+1. **Full zip.** Download the whole library as a zip and import all of it
+   with Fusion Batch Import.
+2. **Small zip.** Download a zip of only the new parts, then make the folders
+   in Fusion and upload the parts into them by hand.
+
+Here is each one for a real update, v2.0.4 to v2.0.5. It added 25 parts
+(123 MB) in 5 new folders, to a library of 1,198 parts (2.3 GB).
+
+| | Full zip | Small zip | Detent |
+|---|---|---|---|
+| Download | 2.3 GB | 123 MB | 123 MB |
+| Parts Fusion has to import | 1,198 | 25 | 25 |
+| Your time | 30 s | 1 min 5 s | 10 s |
+| Total time | 31 min | 3 min 20 s | 2 min 35 s |
+| Parts you already had, imported again | 1,173 | 0 | 0 |
+| Someone has to build the zip first | no | yes | no |
+
+- **Against the full zip, Detent takes about 90% less time.** It downloads
+  95% less and gives Fusion 98% fewer parts to import.
+- **Against the small zip, Detent takes about 85% less of your time:** three
+  clicks, instead of making five folders and filling them. The total is about
+  20% less, because Fusion needs the same two minutes to import the same 25
+  parts. And nobody has to build the small zip.
+
+The small zip gets slower when a release is spread out, because the work is
+per folder. 25 parts spread randomly over this library land in about 21
+folders. Detent is three clicks either way.
+
+### Where the numbers come from
+
+Measured on one Mac on a home connection, September and October 2026:
+
+- Fusion imported the full library, 1,198 parts, in 27 min 39 s.
+- Fusion imported the 25 parts of v2.0.5 in 2 min 8 s.
+- Detent downloaded at 117 Mbit/s. GitHub's zip of the whole library
+  downloaded at 10 Mbit/s.
+
+Estimated. Every estimate favours the old ways:
+
+- The zips download as fast as Detent does. At the 10 Mbit/s we actually got,
+  the full zip takes 59 minutes and Detent takes 95% less time.
+- Fusion Batch Import imports as fast as Detent did.
+- The person is very fast: 30 seconds to unzip and start a batch import, and
+  10 seconds per folder to make it, open it and upload the right parts.
+- Detent needs 10 seconds to check GitHub and your folder before it starts.
 
 ## How it works
 
