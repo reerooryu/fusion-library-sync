@@ -16,6 +16,8 @@ Notes for working on Detent. Read before changing anything.
   no other authors, no personal emails, no session links.
 - Release notes live in `CHANGELOG.md`; `scripts/publish.sh` reads them.
 - Write docs in plain language. Short sentences, no filler.
+- The test plan is `testing.md` in the repo folder. Git ignores it; don't
+  commit it.
 
 ## Log
 
@@ -60,15 +62,18 @@ One line per commit, oldest first.
 - `docs: shorten code comments and docstrings`
 - `feat(sync): parallel downloads, folder check and download size` — v0.4.2.
 - `fix(sync): record only real Fusion IDs, and repair old records` — uploading files report a local path as their id.
+- `chore: keep the test plan out of the repo`
 
 ## Push
 
+Run these from the repo folder.
+
 ```bash
-cd ~/fusion-library-sync && git push origin main
+git push origin main
 ```
 
 To publish releases after pushing:
 
 ```bash
-cd ~/fusion-library-sync && ./scripts/publish.sh --go
+./scripts/publish.sh --go
 ```
