@@ -17,6 +17,8 @@ Use the latest release. Older releases are kept for reference and marked broken.
   and any files Detent doesn't know about.
 - Preview and the upload prompt show how much will be downloaded.
 - The upload prompt no longer says Fusion will stop responding.
+- The note at the bottom of the dialog shows a build ID. If you update the
+  add-in and don't restart Fusion, it says `OUT OF DATE`.
 
 ## v0.4.1 — Safer syncing and Windows install
 

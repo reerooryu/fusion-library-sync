@@ -24,6 +24,7 @@ for _stale in [n for n in list(sys.modules)
     del sys.modules[_stale]
 
 from detent_core import VERSION as CORE_VERSION  # noqa: E402
+from detent_core.build import build_id, version_line  # noqa: E402
 from detent_core import config as C            # noqa: E402
 from detent_core import github as gh           # noqa: E402
 from detent_core import sync as S              # noqa: E402
@@ -41,6 +42,9 @@ LARGE_SYNC = 100                        # files; above this, suggest a smaller t
 CONFIG_PATH = os.path.join(_HERE, "config.json")
 STATE_DIR = os.path.join(_HERE, "state")
 LOG_PATH = os.path.join(STATE_DIR, "detent.log")
+# The code Fusion loaded. Compared with the files on disk each time the
+# dialog opens.
+LOADED_BUILD = build_id(_HERE)
 
 _handlers = []      # keep references, or Fusion drops the handlers
 
@@ -176,11 +180,8 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
 
 
 def _version_line() -> str:
-    """Warn if Fusion is running an old cached copy of detent_core."""
-    if CORE_VERSION == VERSION:
-        return f"Detent {VERSION}"
-    return (f"Detent {VERSION} but core {CORE_VERSION} - STALE MODULE. "
-            "Restart Fusion.")
+    """The version and build Fusion is running. Warns if it's out of date."""
+    return version_line(VERSION, CORE_VERSION, LOADED_BUILD, build_id(_HERE))
 
 
 def _config_note(source) -> str:

@@ -91,7 +91,8 @@ This uploads nothing. It only records what you already have. From now on, use
 **New version of Detent:** on Windows, download the zip again and drag it over
 the old folder. On Mac, run the `curl` line again. Your settings are kept.
 
-If Detent ever says `STALE MODULE`, restart Fusion.
+If the note at the bottom of the dialog says `OUT OF DATE` or `STALE MODULE`,
+restart Fusion. Until you do, it is still running the old code.
 
 ## The three actions
 
