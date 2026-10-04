@@ -118,6 +118,29 @@ Folder check: 1198 file(s), 0 duplicate name(s), 0 not tracked by Detent
 - **Not tracked by Detent** are files in the folder that Detent didn't place
   or adopt, such as parts you added yourself. That's fine, just good to know.
 
+## Where the files go
+
+Your parts are in Fusion's cloud, in the project and folder you picked.
+Detent doesn't keep a copy on your computer.
+
+During a sync, Detent downloads the new parts to a temporary folder, uploads
+them into your Fusion project, and deletes the temporary folder when it
+finishes. With a zip, the unzipped folder stayed on your disk. With Detent,
+nothing does.
+
+- **To change a part,** open it from the Data Panel in Fusion, edit it and
+  save. Detent never overwrites a part it has placed, so your changes are
+  safe from later syncs.
+- **To get a part as a file,** open it in Fusion and use **File → Export**,
+  or download it from the library's GitHub page.
+- **Don't edit Fusion's cache.** Fusion keeps its own copies inside its
+  application folder so parts open faster. Changes made there don't reach
+  the cloud.
+
+Detent keeps two things in the Detent folder, next to `Detent.py`:
+`config.json` (your settings) and `state` (its record of what it placed, and
+a log). Neither holds any parts.
+
 ## What it won't do
 
 - **It won't replace parts you already have.** If a release edits an existing
