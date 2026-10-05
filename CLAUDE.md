@@ -66,6 +66,7 @@ One line per commit, oldest first.
 - `feat(ui): show the build and warn when Fusion is running old code` — two builds shared one version number, so a test ran the old one.
 - `docs(readme): add time saved against the two manual update methods`
 - `docs(readme): explain where synced files are stored`
+- `docs(readme): use the measured full-zip and batch import times`
 
 ## Push
 
