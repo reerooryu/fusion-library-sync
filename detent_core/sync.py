@@ -43,6 +43,8 @@ class Report:
     download_bytes: int = 0
     # The folder as it was when the run started. None if it wasn't scanned.
     check: Optional["Drift"] = None
+    # Fusion wouldn't open a folder, so the run stopped before downloading.
+    stopped_early: bool = False
 
     @property
     def ok(self) -> bool:
@@ -131,8 +133,15 @@ def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
         except P.PathError:
             manifest.drop(repo_path)
             continue
-        folder = panel.ensure_folder(pp.folders)
-        hits = panel.find_by_name(folder, entry.placed_name or pp.name)
+        try:
+            folder = panel.ensure_folder(pp.folders)
+            hits = panel.find_by_name(folder, entry.placed_name or pp.name)
+        except Exception as exc:                      # noqa: BLE001
+            # Still unconfirmed, so it won't be uploaded again.
+            report.failures.append(
+                (repo_path, f"couldn't check it in Fusion ({exc}) - "
+                            "checked again on the next sync"))
+            continue
 
         if len(hits) == 1 and not is_fusion_id(hits[0].lineage):
             report.reconciled.append((repo_path, "still uploading"))
@@ -383,6 +392,24 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     if dry_run:
         return report
 
+    # Open every target folder before downloading. If Fusion won't answer,
+    # stop here instead of after the download.
+    needed = sorted({pp.folders for pp in mapped if pp.repo_path not in blocked})
+    for i, folders in enumerate(needed):
+        if on_progress:
+            if on_progress(i, len(needed),
+                           f"Preparing folders {i + 1}/{len(needed)}") is False:
+                raise gh.Cancelled("cancelled while preparing folders")
+        try:
+            panel.ensure_folder(folders)
+        except Exception as exc:                      # noqa: BLE001
+            report.failures.append(
+                ("/".join(folders) or "(library folder)",
+                 f"{exc}. Nothing was downloaded or uploaded. Wait a minute "
+                 "and sync again. If it keeps happening, restart Fusion."))
+            report.stopped_early = True
+            return report
+
     own_workdir = workdir is None
     workdir = workdir or tempfile.mkdtemp(prefix="detent-")
     try:
@@ -412,7 +439,12 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
             if pp.repo_path in blocked:
                 continue
 
-            folder = panel.ensure_folder(pp.folders)
+            try:
+                folder = panel.ensure_folder(pp.folders)
+            except Exception as exc:                  # noqa: BLE001
+                # Not sent, not recorded: the next sync tries it again.
+                report.failures.append((pp.repo_path, str(exc)))
+                continue
             manifest.mark_inflight(pp.repo_path, placed_name=pp.name)
             manifest.save(manifest_path)
 
@@ -503,7 +535,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
 
     # Record that the sync ran, even if nothing was uploaded. Skipped for
     # previews, cancelled runs (they raise before here) and blocked runs.
-    blocked = bool(report.collisions or report.unmappable)
+    blocked = bool(report.collisions or report.unmappable
+                   or report.stopped_early)
     if not dry_run and not blocked:
         manifest.stamp(src.ref, commit)
         manifest.save(manifest_path)

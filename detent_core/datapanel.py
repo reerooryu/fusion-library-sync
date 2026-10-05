@@ -13,6 +13,7 @@ Fusion does:
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 import itertools
+import time
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,10 @@ class PlacedFile:
 
 class UploadFailed(RuntimeError):
     pass
+
+
+class PanelError(RuntimeError):
+    """Fusion wouldn't answer a Data Panel request, even after retries."""
 
 
 def is_fusion_id(value) -> bool:
@@ -49,8 +54,12 @@ class FakeDataPanel:
 
     def __init__(self, fail_on: Optional[Sequence[str]] = None,
                  crash_after: Optional[int] = None,
-                 deferred: bool = False, temp_ids: int = 0):
+                 deferred: bool = False, temp_ids: int = 0,
+                 refuse_folders: Sequence[Tuple[str, ...]] = ()):
         self.deferred = deferred
+        # Folders Fusion won't open, like a Data Panel call that keeps failing.
+        self.refuse_folders = {tuple(f) for f in refuse_folders}
+        self.folder_calls: List[Tuple[str, ...]] = []
         # A new file shows a temporary local path as its id for its first
         # `temp_ids` listings, like Fusion while an upload is in progress.
         self.temp_ids = temp_ids
@@ -63,6 +72,10 @@ class FakeDataPanel:
         self.crash_after = crash_after
 
     def ensure_folder(self, folders: Sequence[str]) -> str:
+        self.folder_calls.append(tuple(folders))
+        if tuple(folders) in self.refuse_folders:
+            raise PanelError(f"Fusion wouldn't open {'/'.join(folders)!r}: "
+                             "InternalValidationError")
         key: Tuple[str, ...] = ()
         for seg in folders:
             key = key + (seg,)
@@ -142,11 +155,44 @@ class FakeDataPanel:
 class FusionDataPanel:
     """The real Data Panel. Only works inside Fusion."""
 
+    # Fusion's data calls sometimes fail for a moment (seen 5 Oct 2026:
+    # "InternalValidationError : status.isOk() && folders" from
+    # dataFolders.count). Wait this long between tries, in seconds.
+    RETRY_WAITS = (0.5, 1.0, 2.0, 4.0)
+
     def __init__(self, project, root_folder_path: Sequence[str] = ()):
         import adsk.core  # noqa: F401  - fails outside Fusion
         self._project = project
+        self._root_path = tuple(root_folder_path)
         self._cache: Dict[Tuple[str, ...], object] = {}
-        self._root = self._resolve(project.rootFolder, root_folder_path)
+        try:
+            self._root = self._retry(
+                lambda: self._resolve(project.rootFolder, self._root_path))
+        except Exception as exc:                      # noqa: BLE001
+            where = "/".join(self._root_path) or "the project"
+            raise PanelError(f"Fusion wouldn't open {where!r}: {exc}") from exc
+
+    def _pause(self, seconds: float) -> None:
+        """Wait without freezing Fusion's window."""
+        end = time.time() + seconds
+        while time.time() < end:
+            try:
+                import adsk
+                adsk.doEvents()
+            except Exception:                         # noqa: BLE001
+                pass
+            time.sleep(0.05)
+
+    def _retry(self, call):
+        """Run a Fusion call. If Fusion reports an error, wait and try again."""
+        waits = list(self.RETRY_WAITS)
+        while True:
+            try:
+                return call()
+            except Exception:                         # noqa: BLE001
+                if not waits:
+                    raise
+                self._pause(waits.pop(0))
 
     def _resolve(self, folder, parts: Sequence[str]):
         for seg in parts:
@@ -163,13 +209,29 @@ class FusionDataPanel:
         key = tuple(folders)
         if key in self._cache:
             return self._cache[key]
-        folder = self._resolve(self._root, folders)
+        try:
+            folder = self._retry(lambda: self._resolve(self._root, key))
+        except Exception:                             # noqa: BLE001
+            # The folder objects we kept may have gone stale. Start again
+            # from the project.
+            self._cache.clear()
+            try:
+                self._root = self._resolve(self._project.rootFolder,
+                                           self._root_path)
+                folder = self._resolve(self._root, key)
+            except Exception as exc:                  # noqa: BLE001
+                where = "/".join(self._root_path + key) or "the project"
+                raise PanelError(
+                    f"Fusion wouldn't open {where!r}: {exc}") from exc
         self._cache[key] = folder
         return folder
 
     def begin_upload(self, folder, local_path: str, name: str):
         """Start the upload and return straight away. Uploads run in parallel."""
-        return {"future": folder.uploadFile(local_path), "name": name}
+        try:
+            return {"future": folder.uploadFile(local_path), "name": name}
+        except Exception as exc:                      # noqa: BLE001
+            raise UploadFailed(f"{name}: Fusion refused the upload: {exc}")
 
     def poll_upload(self, handle) -> Optional[PlacedFile]:
         """None while still uploading. Raises UploadFailed if it failed.
@@ -195,12 +257,14 @@ class FusionDataPanel:
 
     def list_folder(self, folder) -> List[PlacedFile]:
         # DataFolder has no refresh(); dataFiles is always current.
-        out = []
-        for i in range(folder.dataFiles.count):
-            f = folder.dataFiles.item(i)
-            out.append(PlacedFile(name=f.name, lineage=f.id,
-                                  version=getattr(f, "versionNumber", 1) or 1))
-        return out
+        def read():
+            out = []
+            for i in range(folder.dataFiles.count):
+                f = folder.dataFiles.item(i)
+                out.append(PlacedFile(name=f.name, lineage=f.id,
+                                      version=getattr(f, "versionNumber", 1) or 1))
+            return out
+        return self._retry(read)
 
     def find_by_name(self, folder, name: str) -> List[PlacedFile]:
         return [f for f in self.list_folder(folder) if f.name == name]
@@ -209,12 +273,15 @@ class FusionDataPanel:
         """Every file in every folder under the root."""
         found: Dict[Tuple[str, ...], List[PlacedFile]] = {}
 
+        def subfolders(folder):
+            return [folder.dataFolders.item(i)
+                    for i in range(folder.dataFolders.count)]
+
         def walk(folder, path: Tuple[str, ...]):
             files = self.list_folder(folder)
             if files:
                 found[path] = files
-            for i in range(folder.dataFolders.count):
-                sub = folder.dataFolders.item(i)
+            for sub in self._retry(lambda: subfolders(folder)):
                 walk(sub, path + (sub.name,))
 
         walk(self._root, ())

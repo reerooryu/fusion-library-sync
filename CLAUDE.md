@@ -10,6 +10,8 @@ Notes for working on Detent. Read before changing anything.
 - Check Fusion API behaviour with a probe script before relying on it.
 - A file's id is only its Fusion ID once it starts with `urn:`. While it
   uploads, Fusion reports a local file path instead.
+- Fusion's data calls can fail for a moment. Retry them, and never let one
+  failure end a sync or cost a download.
 - Every fix needs a test that fails without it. Revert the fix to confirm.
 - Commits: conventional commits with plain, technical names. Author and
   committer are `reerooryu <reerooryu@users.noreply.github.com>`. No trailers,
@@ -67,6 +69,7 @@ One line per commit, oldest first.
 - `docs(readme): add time saved against the two manual update methods`
 - `docs(readme): explain where synced files are stored`
 - `docs(readme): use the measured full-zip and batch import times`
+- `fix(sync): retry Fusion folder errors and open folders before downloading` — a full sync downloaded everything, then died on the first upload.
 
 ## Push
 

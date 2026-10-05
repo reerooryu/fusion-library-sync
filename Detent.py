@@ -30,7 +30,7 @@ from detent_core import github as gh           # noqa: E402
 from detent_core import sync as S              # noqa: E402
 from detent_core import manifest as M          # noqa: E402
 from detent_core import fusion_project as FP   # noqa: E402
-from detent_core.datapanel import FusionDataPanel  # noqa: E402
+from detent_core.datapanel import FusionDataPanel, PanelError  # noqa: E402
 
 CMD_ID = "DetentSyncLibrary"
 CMD_NAME = "Sync Library"
@@ -235,7 +235,13 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
             if not action.startswith("Preview"):
                 cfg.save(CONFIG_PATH)
 
-            panel = FusionDataPanel(project, source.folders)
+            try:
+                panel = FusionDataPanel(project, source.folders)
+            except PanelError as exc:
+                ui.messageBox(
+                    f"{exc}\n\nNothing was uploaded. Wait a minute and try "
+                    "again. If it keeps happening, restart Fusion.", "Detent")
+                return
             src = gh.Source(source.repo, source.ref, source.subpath)
             transport = gh.UrllibTransport()
 

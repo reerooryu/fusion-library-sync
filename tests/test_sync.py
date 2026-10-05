@@ -1969,3 +1969,274 @@ class TestUploadHandleTemporaryIds:
                dry_run=False, settle_wait=1.2)
         e = Manifest.load(mpath).get("A/Part.f3d")
         assert e.state == INFLIGHT and e.lineage is None, e
+
+
+class TestFusionFolderErrors:
+    """Fusion sometimes refuses a Data Panel call. Seen 5 Oct 2026: a full
+    sync downloaded 1,165 files, then dataFolders.count raised
+    InternalValidationError on the first upload and the whole run died."""
+
+    def folders_of(self, tree):
+        from detent_core import paths as P
+        return {P.map_path(p).folders for p in tree}
+
+    def test_a_folder_fusion_wont_open_stops_before_the_download(
+            self, small_tree, src, tmp_path):
+        bad = sorted(self.folders_of(small_tree))[0]
+        panel = FakeDataPanel(refuse_folders=[bad])
+        tr = FakeTransport(small_tree)
+        mpath = str(tmp_path / "m.json")
+
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+
+        assert tr.byte_calls == 0, "downloaded before checking the folders"
+        assert panel.uploads == []
+        assert rep.stopped_early and not rep.ok
+        assert len(rep.failures) == 1
+        assert "Nothing was downloaded" in rep.failures[0][1]
+        m = Manifest.load(mpath)
+        assert m.files == {}, "nothing was sent, so nothing may be recorded"
+        assert m.synced_at is None, "a run that stopped early isn't a sync"
+
+    def test_every_folder_is_opened_before_the_first_download(
+            self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+        seen = {}
+
+        class Watching(FakeTransport):
+            def get_bytes(self, url, on_chunk=None):
+                seen.setdefault("folders", set(panel.folder_calls))
+                return super().get_bytes(url, on_chunk)
+
+        S.sync(src, str(tmp_path / "m.json"), panel, Watching(small_tree), F3D,
+               dry_run=False)
+
+        assert seen["folders"] == self.folders_of(small_tree)
+
+    def test_preview_opens_no_folders(self, small_tree, src, tmp_path):
+        """Opening a folder creates it. Preview must change nothing."""
+        panel = FakeDataPanel()
+        S.sync(src, str(tmp_path / "m.json"), panel, FakeTransport(small_tree),
+               F3D, dry_run=True)
+        assert panel.folder_calls == []
+
+    def test_the_next_sync_places_everything_once(self, small_tree, src, tmp_path):
+        bad = sorted(self.folders_of(small_tree))[0]
+        panel = FakeDataPanel(refuse_folders=[bad])
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+
+        panel.refuse_folders.clear()                  # Fusion recovers
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=False)
+
+        assert len(rep.added) == len(small_tree) and rep.ok
+        assert panel.duplicates() == {}
+
+    def test_a_folder_error_while_sending_skips_only_those_files(
+            self, small_tree, src, tmp_path):
+        from detent_core import paths as P
+        bad = sorted(self.folders_of(small_tree))[0]
+        in_bad = [p for p in small_tree if P.map_path(p).folders == bad]
+
+        class FailsLater(FakeDataPanel):
+            """Opens every folder once, then refuses one."""
+            def ensure_folder(self, folders):
+                if tuple(folders) == bad and tuple(folders) in self.folder_calls:
+                    self.folder_calls.append(tuple(folders))
+                    raise RuntimeError("InternalValidationError")
+                return super().ensure_folder(folders)
+
+        panel = FailsLater()
+        mpath = str(tmp_path / "m.json")
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=False)
+
+        assert sorted(p for p, _m in rep.failures) == sorted(in_bad)
+        assert len(rep.added) == len(small_tree) - len(in_bad)
+        m = Manifest.load(mpath)
+        assert all(m.get(p) is None for p in in_bad), \
+            "a file that was never sent must not be recorded"
+
+        # Fusion recovers: only the skipped files go up, and nothing twice.
+        fixed = FakeDataPanel()
+        fixed.folders, fixed.contents = panel.folders, panel.contents
+        fixed._ids = panel._ids
+        plan, rep = S.sync(src, mpath, fixed, FakeTransport(small_tree), F3D,
+                           dry_run=False)
+        assert sorted(rep.added) == sorted(in_bad)
+        assert fixed.duplicates() == {}
+
+    def test_an_unconfirmed_file_fusion_cant_check_is_not_uploaded_again(
+            self, small_tree, src, tmp_path):
+        mpath = str(tmp_path / "m.json")
+        victim = sorted(small_tree)[0]
+        m = Manifest(source_id="x", repo=src.repo, ref=src.ref)
+        m.mark_inflight(victim)
+        m.save(mpath)
+
+        class CantLook(FakeDataPanel):
+            def find_by_name(self, folder_id, name):
+                raise RuntimeError("InternalValidationError")
+
+        panel = CantLook()
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=False)
+
+        from detent_core import paths as P
+        assert P.map_path(victim).name not in panel.uploads
+        assert victim in Manifest.load(mpath).in_state(INFLIGHT)
+        assert any(p == victim and "next sync" in msg for p, msg in rep.failures)
+        assert len(rep.added) == len(small_tree) - 1, "the rest still sync"
+
+
+class TestFusionPanelRetries:
+    """FusionDataPanel against stand-ins for Fusion's folder objects."""
+
+    ERR = "2 : InternalValidationError : status.isOk() && folders"
+
+    class Folder:
+        def __init__(self, name, fail=0):
+            self.name, self.children, self.files = name, [], []
+            self.fail = fail                  # how many calls fail first
+            self.adds = 0
+            outer = self
+
+            class Folders:
+                @property
+                def count(self):
+                    if outer.fail > 0:
+                        outer.fail -= 1
+                        raise RuntimeError(TestFusionPanelRetries.ERR)
+                    return len(outer.children)
+
+                def item(self, i):
+                    return outer.children[i]
+
+                def add(self, name):
+                    outer.adds += 1
+                    child = TestFusionPanelRetries.Folder(name)
+                    outer.children.append(child)
+                    return child
+
+            class Files:
+                @property
+                def count(self):
+                    if outer.fail > 0:
+                        outer.fail -= 1
+                        raise RuntimeError(TestFusionPanelRetries.ERR)
+                    return len(outer.files)
+
+                def item(self, i):
+                    return outer.files[i]
+
+            self.dataFolders, self.dataFiles = Folders(), Files()
+
+    def panel(self, project_root, root_path=("T Full",), root=None):
+        from detent_core.datapanel import FusionDataPanel
+        p = object.__new__(FusionDataPanel)           # skip the adsk import
+        p.pauses = []
+        p._pause = p.pauses.append                    # don't really wait
+        p._project = type("Project", (), {"rootFolder": project_root})()
+        p._root_path = tuple(root_path)
+        p._cache = {}
+        p._root = root if root is not None else p._resolve(project_root, root_path)
+        return p
+
+    def test_a_call_that_fails_twice_then_works(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+        p._root.fail = 2
+
+        folder = p.ensure_folder(("Hardware",))
+
+        assert folder.name == "Hardware"
+        assert len(p.pauses) == 2, "should have waited between tries"
+
+    def test_a_retry_does_not_create_the_folder_twice(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+        made = p.ensure_folder(("Hardware",))         # exists now
+        p._cache.clear()
+        made.fail = 1                                 # fails while going deeper
+
+        p.ensure_folder(("Hardware", "Screws"))
+
+        assert [c.name for c in p._root.children] == ["Hardware"]
+        assert p._root.adds == 1
+
+    def test_stale_folder_objects_are_replaced_from_the_project(self):
+        top = self.Folder("root")
+        fresh = self.Folder("T Full")
+        top.children.append(fresh)
+        stale = self.Folder("T Full", fail=10**6)     # never answers again
+        p = self.panel(top, root=stale)
+
+        folder = p.ensure_folder(("Hardware",))
+
+        assert folder in fresh.children, "should have used the live folder"
+        assert p._root is fresh
+
+    def test_when_fusion_never_answers_the_error_names_the_folder(self):
+        from detent_core.datapanel import PanelError
+        top = self.Folder("root", fail=10**6)
+        stale = self.Folder("T Full", fail=10**6)
+        p = self.panel(top, root=stale)
+
+        with pytest.raises(PanelError) as err:
+            p.ensure_folder(("Hardware", "Screws"))
+
+        assert "T Full/Hardware/Screws" in str(err.value)
+        assert "InternalValidationError" in str(err.value)
+        assert len(p.pauses) == len(p.RETRY_WAITS)
+
+    def test_listing_a_folder_retries(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+        p._root.fail = 1
+        assert p.list_folder(p._root) == []
+        assert len(p.pauses) == 1
+
+    def test_scan_retries_listing_subfolders(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+        p.ensure_folder(("Hardware",))
+
+        real = p._root.dataFolders            # fails once, then works
+        calls = {"n": 0}
+
+        class Once:
+            @property
+            def count(self):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise RuntimeError(TestFusionPanelRetries.ERR)
+                return real.count
+
+            def item(self, i):
+                return real.item(i)
+
+        p._root.dataFolders = Once()
+        assert p.scan() == {}
+        assert len(p.pauses) == 1
+
+    def test_an_upload_fusion_refuses_is_a_failed_upload_not_a_crash(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+
+        class Refuses:
+            def uploadFile(self, path):
+                raise RuntimeError(TestFusionPanelRetries.ERR)
+
+        with pytest.raises(UploadFailed):
+            p.begin_upload(Refuses(), "/tmp/x.f3d", "Part")
+
+
+class TestAddinReportsAFolderFusionWontOpen:
+    def test_the_dialog_says_so_instead_of_a_traceback(self):
+        source = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "Detent.py"), encoding="utf-8").read()
+        opening = source.index("panel = FusionDataPanel(project, source.folders)")
+        after = source[opening:opening + 400]
+        assert "except PanelError as exc:" in after
+        assert "restart Fusion" in after

@@ -17,6 +17,10 @@ Use the latest release. Older releases are kept for reference and marked broken.
   and any files Detent doesn't know about.
 - Preview and the upload prompt show how much will be downloaded.
 - The upload prompt no longer says Fusion will stop responding.
+- Fusion sometimes refuses to open a folder for a moment. Detent now tries
+  again. It also opens every folder before it downloads anything, so if
+  Fusion still refuses, it stops in seconds and says so. Before, one refusal
+  ended the whole sync, after the download.
 - The note at the bottom of the dialog shows a build ID. If you update the
   add-in and don't restart Fusion, it says `OUT OF DATE`.
 
