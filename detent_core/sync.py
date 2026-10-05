@@ -23,6 +23,35 @@ from .manifest import Manifest, ADOPTED, INFLIGHT, PLACED, adopt
 
 Progress = Callable[[int, int, str], None]
 
+# How long to wait for Fusion to confirm uploads before handing back. Fusion
+# keeps uploading in the background; the next sync confirms what's left.
+# Waiting for a whole library took 20 minutes (5 Oct 2026).
+CONFIRM_WAIT = 120.0
+
+
+class Clock:
+    """Seconds spent in each part of a run, in the order they happened."""
+
+    def __init__(self):
+        self.parts: Dict[str, float] = {}
+        self._at = time.time()
+
+    def lap(self, name: str) -> None:
+        now = time.time()
+        self.parts[name] = self.parts.get(name, 0.0) + (now - self._at)
+        self._at = now
+
+
+def timing_text(parts: Dict[str, float]) -> str:
+    """'3 min 12 s (download 2 min 31 s, send 20 s)'. Parts under a second
+    are left out."""
+    def span(seconds: float) -> str:
+        whole = int(round(seconds))
+        return f"{whole // 60} min {whole % 60} s" if whole >= 60 else f"{whole} s"
+    shown = [f"{name} {span(t)}" for name, t in parts.items() if t >= 1.0]
+    total = span(sum(parts.values()))
+    return f"{total} ({', '.join(shown)})" if shown else total
+
 
 @dataclass
 class Report:
@@ -45,6 +74,11 @@ class Report:
     check: Optional["Drift"] = None
     # Fusion wouldn't open a folder, so the run stopped before downloading.
     stopped_early: bool = False
+    # Sent, but Fusion hadn't confirmed them when the wait ended. Not a
+    # failure: Fusion is still uploading them, and the next sync checks.
+    pending: List[str] = field(default_factory=list)
+    # Seconds per part of the run. See Clock.
+    timings: Dict[str, float] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -58,6 +92,7 @@ class Report:
             ("changed upstream", self.skipped_changed, "(Phase 2)"),
             ("gone upstream", self.skipped_orphan, "(cannot delete)"),
             ("unverified", self.unverified, ""),
+            ("still uploading", self.pending, "(confirmed on the next sync)"),
             ("reconciled", self.reconciled, ""),
             ("renamed", self.renamed, "(see detail)"),
             ("NAME TAKEN", self.occupied, "(not uploaded)"),
@@ -121,47 +156,66 @@ def folder_change_impact(manifest: Optional[Manifest],
 
 def reconcile_inflight(manifest: Manifest, panel: DataPanel, report: Report,
                        selected: Optional[Dict[str, str]] = None) -> None:
-    """Confirm unconfirmed uploads by checking the folder.
+    """Confirm unconfirmed uploads by checking their folders.
 
     One file with that name: it landed; record its Fusion ID. If it's still
     uploading (no real ID yet), leave it for next time. None: drop it so it's
     retried. More than one: needs a human. `selected` supplies the blob.
+
+    Each folder is listed once, however many files in it are waiting.
     """
+    by_folder: Dict[Tuple[str, ...], List[Tuple[str, object, str]]] = {}
     for repo_path, entry in list(manifest.in_state(INFLIGHT).items()):
         try:
             pp = P.map_path(repo_path)
         except P.PathError:
             manifest.drop(repo_path)
             continue
+        by_folder.setdefault(pp.folders, []).append(
+            (repo_path, entry, entry.placed_name or pp.name))
+
+    for folders, waiting in by_folder.items():
         try:
-            folder = panel.ensure_folder(pp.folders)
-            hits = panel.find_by_name(folder, entry.placed_name or pp.name)
+            folder = panel.peek_folder(folders)
+            listing = panel.list_folder(folder) if folder is not None else []
         except Exception as exc:                      # noqa: BLE001
-            # Still unconfirmed, so it won't be uploaded again.
-            report.failures.append(
-                (repo_path, f"couldn't check it in Fusion ({exc}) - "
-                            "checked again on the next sync"))
+            # Still unconfirmed, so they won't be uploaded again.
+            for repo_path, _entry, _name in waiting:
+                report.failures.append(
+                    (repo_path, f"couldn't check it in Fusion ({exc}) - "
+                                "checked again on the next sync"))
             continue
 
-        if len(hits) == 1 and not is_fusion_id(hits[0].lineage):
-            report.reconciled.append((repo_path, "still uploading"))
-        elif len(hits) == 1:
-            blob = entry.blob or (selected or {}).get(repo_path)
-            manifest.record(repo_path, blob, hits[0].lineage,
-                            hits[0].version, state=PLACED,
-                            placed_name=entry.placed_name)
-            report.reconciled.append((repo_path, "landed"))
-        elif not hits:
-            manifest.drop(repo_path)
-            report.reconciled.append((repo_path, "not present, will retry"))
-        else:
-            report.failures.append(
-                (repo_path, f"{len(hits)} files already named {pp.name!r} - "
-                            "resolve by hand before syncing"))
+        named: Dict[str, List] = {}
+        for f in listing:
+            named.setdefault(f.name, []).append(f)
+
+        for repo_path, entry, name in waiting:
+            hits = named.get(name, [])
+            if len(hits) == 1 and not is_fusion_id(hits[0].lineage):
+                report.reconciled.append((repo_path, "still uploading"))
+            elif len(hits) == 1:
+                blob = entry.blob or (selected or {}).get(repo_path)
+                manifest.record(repo_path, blob, hits[0].lineage,
+                                hits[0].version, state=PLACED,
+                                placed_name=entry.placed_name)
+                report.reconciled.append((repo_path, "landed"))
+            elif not hits:
+                manifest.drop(repo_path)
+                report.reconciled.append((repo_path, "not present, will retry"))
+            else:
+                report.failures.append(
+                    (repo_path, f"{len(hits)} files already named {name!r} - "
+                                "resolve by hand before syncing"))
 
 
-def detect_drift(manifest: Manifest, panel: DataPanel) -> Drift:
-    """Find placed files that are no longer in the Data Panel.
+def detect_drift(manifest: Manifest, panel: DataPanel,
+                 on_progress: Optional[Progress] = None) -> Drift:
+    """Read every folder and find placed files that are no longer there.
+
+    Slow on a big library: one request to Fusion per folder. Only the full
+    check does this; an ordinary sync looks only at the folders it will put
+    files into.
 
     missing   lineage gone, name free: safe to upload again
     occupied  lineage gone, another file has the name: report, don't upload
@@ -175,8 +229,14 @@ def detect_drift(manifest: Manifest, panel: DataPanel) -> Drift:
     Maps paths without `subpath`, like apply_plan. adopt_existing uses it, so
     the two disagree if a subpath is set. Config rejects subpath for now.
     """
+    def seen(count: int) -> None:
+        if on_progress and on_progress(0, 0, f"Checking folder {count}") is False:
+            raise gh.Cancelled("cancelled while checking folders")
+
     try:
-        scan = panel.scan()
+        scan = panel.scan(seen)
+    except gh.Cancelled:
+        raise
     except Exception:                                  # noqa: BLE001
         return Drift()
 
@@ -230,6 +290,9 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
     Never drops a manifest entry: the file may already be in the cloud, and
     the entry is what stops it being uploaded twice. Unresolved entries stay
     inflight for reconcile_inflight to check next run.
+
+    Waits at most `max_wait` seconds. Whatever Fusion hasn't confirmed by
+    then goes in report.pending. Cancel during the wait just stops waiting.
     """
     pre_existing = pre_existing or set()
     pending = dict(handles)
@@ -237,7 +300,15 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
     total = len(pending)
     first_pass = True
 
-    while pending and time.time() < deadline:
+    def carry_on() -> bool:
+        """Update the dialog. False once the user stops the wait."""
+        done = total - len(pending)
+        return not (on_progress and on_progress(
+            done, total,
+            f"Confirming {done}/{total} - Cancel to stop waiting") is False)
+
+    stopped = False
+    while pending and time.time() < deadline and not stopped:
         # Check each folder once per pass.
         by_folder: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
         for repo_path in pending:
@@ -251,6 +322,11 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
             by_folder.setdefault(pp.folders, []).append((repo_path, pp.name))
 
         for folders, wanted in by_folder.items():
+            # A big library has over a hundred folders, so check the time
+            # and the Cancel button between them, not just between passes.
+            if time.time() >= deadline or not carry_on():
+                stopped = True
+                break
             try:
                 folder = panel.ensure_folder(folders)
                 present: Dict[str, List] = {}
@@ -294,6 +370,9 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                              "identify itself - left for the next run to reconcile"))
                         pending.pop(repo_path, None)
 
+        if stopped:
+            break
+
         # Ask the upload handle about anything not found in the folder.
         for repo_path, handle in list(pending.items()):
             try:
@@ -310,19 +389,15 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
                 pending.pop(repo_path, None)
 
         manifest.save(manifest_path)
-        done = total - len(pending)
-        if on_progress:
-            if on_progress(done, total, f"Finishing {done}/{total}") is False:
-                raise gh.Cancelled("cancelled while finishing")
+        if not carry_on():
+            break                             # the uploads carry on in Fusion
         first_pass = False
         if not pending:
             break
-        time.sleep(1.0)
+        panel.wait(1.0)
 
-    for repo_path in pending:
-        report.failures.append(
-            (repo_path, f"not confirmed after {max_wait:.0f}s - "
-                        "checked again on the next sync"))
+    manifest.save(manifest_path)
+    report.pending.extend(sorted(pending))
 
 
 def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
@@ -334,13 +409,15 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                fallback_at: int = gh.ARCHIVE_FALLBACK_MIN,
                settle_wait: Optional[float] = None,
                known_lineages: Optional[Set[str]] = None,
-               known_names: Optional[Dict[Tuple[str, ...], Set[str]]] = None
-               ) -> Report:
+               known_names: Optional[Dict[Tuple[str, ...], Set[str]]] = None,
+               clock: Optional[Clock] = None) -> Report:
     """Upload new and missing files. Writes nothing when dry_run.
 
-    known_lineages and known_names come from the drift scan. If None, each
-    target folder is listed here instead.
+    known_lineages and known_names come from the full check. If None, only
+    the folders that will receive files are listed here, and nothing is
+    created to do it.
     """
+    clock = clock or Clock()
     report = Report(
         skipped_changed=list(plan.change),
         skipped_orphan=list(plan.orphan),
@@ -363,14 +440,20 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
     if not mapped:
         return report
 
-    # What's already in the target folders. Preview only uses the drift scan;
-    # it doesn't list folders itself.
+    # What's already in the folders that will receive files. A folder that
+    # doesn't exist yet is empty, and isn't created here: Preview runs this.
     pre_existing: Set[str] = set(known_lineages or ())
     taken: Dict[Tuple[str, ...], Set[str]] = dict(known_names or {})
-    if (known_lineages is None or known_names is None) and not dry_run:
-        for folders in {pp.folders for pp in mapped}:
+    if known_lineages is None or known_names is None:
+        targets = sorted({pp.folders for pp in mapped})
+        for i, folders in enumerate(targets):
+            if on_progress and on_progress(
+                    i, len(targets),
+                    f"Looking in folder {i + 1}/{len(targets)}") is False:
+                raise gh.Cancelled("cancelled while looking in folders")
             try:
-                listing = panel.list_folder(panel.ensure_folder(folders))
+                folder = panel.peek_folder(folders)
+                listing = panel.list_folder(folder) if folder is not None else []
             except Exception:                         # noqa: BLE001
                 # Can't list it: settle falls back to the upload handle.
                 continue
@@ -378,6 +461,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                 pre_existing.update(f.lineage for f in listing)
             if known_names is None:
                 taken[folders] = {f.name for f in listing}
+    clock.lap("look")
 
     # Don't upload a new file onto a name that's already in the folder. The
     # manifest only knows files Detent placed, so this catches files added by
@@ -409,6 +493,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                  "and sync again. If it keeps happening, restart Fusion."))
             report.stopped_early = True
             return report
+    clock.lap("folders")
 
     own_workdir = workdir is None
     workdir = workdir or tempfile.mkdtemp(prefix="detent-")
@@ -421,6 +506,7 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
             on_progress=on_progress, fallback_at=fallback_at,
         )
         report.failures.extend(fetch_failures)
+        clock.lap("download")
 
         total = len(wanted)
         handles: Dict[str, object] = {}
@@ -462,14 +548,14 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                 report.failures.append((pp.repo_path, str(exc)))
                 continue
 
+        clock.lap("send")
         if handles:
-            # One second per upload, at least 300. Fusion processes uploads in
-            # a queue, so big batches need longer.
-            wait = settle_wait if settle_wait is not None else max(300.0, float(len(handles)))
+            wait = settle_wait if settle_wait is not None else CONFIRM_WAIT
             settle(manifest, panel, selected, report, manifest_path,
                    handles, on_progress, wait,
                    mapped_by_path={pp.repo_path: pp for pp in mapped},
                    pre_existing=pre_existing)
+        clock.lap("confirm")
 
         report.replaced = [p for p in report.added if p in replace]
 
@@ -493,14 +579,18 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          commit: Optional[str] = None) -> Tuple[PL.Plan, Report]:
     """Run one full sync. Defaults to dry_run.
 
-    verify_placed: check the Data Panel for files deleted by hand.
+    verify_placed: the full check. Reads every folder to find files deleted
+    by hand, duplicates and files Detent doesn't know. Slow on a big library.
+    Without it, only the folders that will receive files are looked at.
     commit: use this commit instead of resolving `ref` again, so the upload
     matches the preview. The resolved commit is returned as Plan.commit.
     """
     transport = transport or gh.UrllibTransport()
+    clock = Clock()
 
     commit = commit or gh.resolve_commit(src, transport)
     tree = gh.fetch_tree(src, transport, commit)
+    clock.lap("github")
 
     manifest = Manifest.load(manifest_path) or Manifest(
         source_id=src.repo.replace("/", "_"), repo=src.repo, ref=src.ref)
@@ -518,8 +608,21 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     if not dry_run:
         reconcile_inflight(manifest, panel, pre, selected)
         manifest.save(manifest_path)
+    clock.lap("recheck")
 
-    drift = detect_drift(manifest, panel) if verify_placed else Drift()
+    if not verify_placed and manifest.files:
+        # One cheap request: if the whole library folder is gone, the record
+        # can't be trusted, so do the full check (which is quick when there's
+        # nothing to read).
+        try:
+            if panel.peek_folder(()) is None:
+                verify_placed = True
+        except Exception:                             # noqa: BLE001
+            pass
+
+    drift = (detect_drift(manifest, panel, on_progress) if verify_placed
+             else Drift())
+    clock.lap("check")
     plan = PL.diff(selected, manifest, missing=drift.missing)
     plan.conflict = sorted(drift.occupied)
     plan.commit = commit
@@ -527,7 +630,7 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
                         transport, commit, on_progress=on_progress,
                         dry_run=dry_run, fallback_at=fallback_at,
                         settle_wait=settle_wait, known_lineages=drift.present,
-                        known_names=drift.names)
+                        known_names=drift.names, clock=clock)
     refused = {p for p, _n in report.occupied}
     report.download_bytes = tree.bytes_for(
         [p for p in plan.to_place if p not in refused])
@@ -543,16 +646,22 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
 
     report.reconciled = pre.reconciled + report.reconciled
     report.failures = pre.failures + report.failures
+    clock.lap("record")
+    report.timings = dict(clock.parts)
     return plan, report
 
 
 def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
                    transport: gh.Transport, at_ref: Optional[str],
                    include: Sequence[str] = ("**/*.f3d",),
-                   dry_run: bool = True) -> Tuple[Manifest, Dict[str, int]]:
+                   dry_run: bool = True,
+                   on_progress: Optional[Progress] = None
+                   ) -> Tuple[Manifest, Dict[str, int]]:
     """Record a library the user already has. Uploads nothing.
 
     With at_ref=None, files are recorded without a blob (unverified).
+
+    Reads only the folders the release has files in, once each.
     """
     release_known = at_ref is not None
     # Without a release, match against the current ref.
@@ -560,27 +669,35 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
     tree = gh.fetch_tree(gh.Source(src.repo, match_ref, src.subpath), transport)
     tree = PL.select(tree, include)
 
-    panel_contents = panel.scan()
-    local: Dict[str, str] = {}
-    by_name: Dict[Tuple[Tuple[str, ...], str], str] = {}
-    for folders, files in panel_contents.items():
-        for f in files:
-            if is_fusion_id(f.lineage):        # skip files still uploading
-                by_name[(folders, f.name)] = f.lineage
-
+    wanted: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
     for repo_path in tree:
         try:
             pp = P.map_path(repo_path, src.subpath)
         except P.PathError:
             continue
-        lineage = by_name.get((pp.folders, pp.name))
-        if lineage:
-            local[repo_path] = lineage
+        wanted.setdefault(pp.folders, []).append((repo_path, pp.name))
+
+    local: Dict[str, str] = {}
+    in_panel = 0
+    for i, folders in enumerate(sorted(wanted)):
+        if on_progress and on_progress(
+                i, len(wanted), f"Reading folder {i + 1}/{len(wanted)}") is False:
+            raise gh.Cancelled("cancelled while reading folders")
+        folder = panel.peek_folder(folders)
+        if folder is None:
+            continue
+        listing = panel.list_folder(folder)
+        in_panel += len(listing)
+        # Files still uploading have no real ID yet, so they're skipped.
+        by_name = {f.name: f.lineage for f in listing if is_fusion_id(f.lineage)}
+        for repo_path, name in wanted[folders]:
+            if name in by_name:
+                local[repo_path] = by_name[name]
 
     stats = {
         "matched": len(local),
         "in_release": len(tree),
-        "in_panel": sum(len(v) for v in panel_contents.values()),
+        "in_panel": in_panel,
     }
     stats["missing"] = stats["in_release"] - stats["matched"]
 

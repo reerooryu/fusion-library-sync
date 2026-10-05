@@ -64,9 +64,13 @@ Pick the one that fits you.
 5. **Action**: Sync now → **OK**
 6. Check the list it shows you, then click **Yes**.
 
-The whole library is about 1,200 files and 2 GB. The download takes a few
-minutes on a fast connection; putting the files into Fusion takes longer. Keep
-Fusion open until it finishes. To try a small part first, see
+The whole library is about 1,200 files and 2 GB. Detent downloads it, hands
+every part to Fusion, and waits up to two minutes for Fusion to confirm them.
+Fusion then keeps uploading in the background, so the done box will say some
+parts are `still uploading`. **Keep Fusion open until its uploads finish.**
+Run Sync now again later and Detent confirms them. Nothing is uploaded twice.
+
+To try a small part first, see
 [Sync part of the library](#sync-part-of-the-library).
 
 ### I already have the library
@@ -97,17 +101,25 @@ the old folder. On Mac, run the `curl` line again. Your settings are kept.
 If the note at the bottom of the dialog says `OUT OF DATE` or `STALE MODULE`,
 restart Fusion. Until you do, it is still running the old code.
 
-## The three actions
+## The four actions
 
 | Action | What it does | When to use it |
 |---|---|---|
 | **Sync now** | Shows what's new, asks, then uploads it | To get the library, or a new release |
-| **Preview changes** | Shows what Sync now would do, and checks the folder. Changes nothing. | To check for updates, or check your library is healthy |
+| **Preview changes** | Shows what Sync now would do. Changes nothing. | To check for updates |
+| **Check library (slow)** | Reads every folder. Puts back parts you deleted, and lists duplicates. | If something looks wrong |
 | **Adopt existing library** | Records the files you already have. Uploads nothing. | Once, if you already have the library |
+
+Sync now and Preview are quick because they don't read your whole library.
+They compare GitHub with Detent's own record, and look only at the folders
+new parts are going into.
 
 ## Checking your library
 
-Preview ends with a line like this:
+Sync now and Preview won't notice if you delete a part by hand. **Check
+library** will. It reads every folder, which takes a while on a big library,
+and offers to put back anything that's missing. It ends with a line like
+this:
 
 ```
 Folder check: 1198 file(s), 0 duplicate name(s), 0 not tracked by Detent

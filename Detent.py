@@ -6,6 +6,7 @@ without Fusion.
 
 import os
 import sys
+import time
 import traceback
 
 import adsk.core
@@ -36,12 +37,14 @@ CMD_ID = "DetentSyncLibrary"
 CMD_NAME = "Sync Library"
 CMD_TIP = ("Sync a Git-hosted CAD library into this project. Downloads only "
            "what changed. Never modifies a file it has already placed.")
+CHECK = "Check library (slow)"
 PANEL_ID = "SolidScriptsAddinsPanel"    # Utilities tab > ADD-INS
 LARGE_SYNC = 100                        # files; above this, suggest a smaller test first
 
 CONFIG_PATH = os.path.join(_HERE, "config.json")
 STATE_DIR = os.path.join(_HERE, "state")
 LOG_PATH = os.path.join(STATE_DIR, "detent.log")
+TIMING_PATH = os.path.join(STATE_DIR, "timing.log")
 # The code Fusion loaded. Compared with the files on disk each time the
 # dialog opens.
 LOADED_BUILD = build_id(_HERE)
@@ -59,6 +62,34 @@ def _log(text):
     except Exception:
         pass
     return LOG_PATH
+
+
+def _log_timing(action, source, timings, note=""):
+    """One line per run in state/timing.log: where the time went."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        parts = "  ".join(f"{k} {v:.1f}s" for k, v in timings.items())
+        stamp = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(TIMING_PATH, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp}  build {LOADED_BUILD}  {action}  {source.id}  "
+                     f"total {sum(timings.values()):.1f}s  |  {parts}  |  {note}\n")
+    except Exception:
+        pass
+
+
+def _watch(progress, bar=True):
+    """Progress callback for a progress dialog. Returns False once the user
+    clicks Cancel."""
+    def on_progress(i, total, label):
+        if progress.wasCancelled:
+            return False
+        if label:
+            progress.message = label.replace("%", "%%")
+        if bar:
+            progress.progressValue = min(max(i, 0), total)
+        adsk.doEvents()
+        return True
+    return on_progress
 
 
 def _fail(ui, what):
@@ -128,10 +159,13 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 "action", "Action", adsk.core.DropDownStyles.TextListDropDownStyle)
             action.listItems.add("Sync now", True, "")
             action.listItems.add("Preview changes", False, "")
+            action.listItems.add(CHECK, False, "")
             action.listItems.add("Adopt existing library", False, "")
             action.tooltip = (
-                "Preview lists what would change and writes nothing.\n"
                 "Sync uploads new files only.\n"
+                "Preview lists what would change and writes nothing.\n"
+                "Check reads every folder: it finds parts deleted by hand and "
+                "puts them back, and lists duplicates.\n"
                 "Adopt claims a library you already imported, without uploading.")
 
             adopt_ref = inputs.addStringValueInput(
@@ -235,21 +269,23 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
             if not action.startswith("Preview"):
                 cfg.save(CONFIG_PATH)
 
-            try:
-                panel = FusionDataPanel(project, source.folders)
-            except PanelError as exc:
-                ui.messageBox(
-                    f"{exc}\n\nNothing was uploaded. Wait a minute and try "
-                    "again. If it keeps happening, restart Fusion.", "Detent")
-                return
+            panel = FusionDataPanel(project, source.folders)
             src = gh.Source(source.repo, source.ref, source.subpath)
             transport = gh.UrllibTransport()
 
             if action.startswith("Adopt"):
                 _do_adopt(ui, src, manifest_path, panel, transport, source, adopt_ref)
             else:
+                # A changed folder needs the full check: the record says the
+                # files are placed, and only reading the folder shows they
+                # aren't in the new one.
                 _do_sync(ui, src, manifest_path, panel, transport, source,
-                         write=action.startswith("Sync"))
+                         write=not action.startswith("Preview"),
+                         full=action.startswith("Check") or bool(stranded))
+        except PanelError as exc:
+            ui.messageBox(
+                f"{exc}\n\nWait a minute and try again. If it keeps "
+                "happening, restart Fusion.", "Detent")
         except Exception:
             _fail(ui, "Detent failed")
 
@@ -275,25 +311,40 @@ def _pick_project(name, log):
     return FP.resolve_project(_app(), None, log)
 
 
-def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
+def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool,
+             full: bool = False):
     """Preview first, then ask before uploading. A sync with nothing to upload
-    still runs, so the manifest records the check."""
+    still runs, so the manifest records it.
+
+    full: the slow check that reads every folder. Without it, Detent compares
+    GitHub with its own record and looks only at the folders it will put
+    files into.
+    """
+    action = CHECK if full else ("Sync now" if write else "Preview changes")
     progress = ui.createProgressDialog()
-    progress.isCancelButtonShown = False
-    progress.show("Detent", "Reading %v...", 0, 1)
+    progress.isCancelButtonShown = full
+    progress.show("Detent", "Reading the library on GitHub...", 0, 1)
     adsk.doEvents()
     try:
         plan, preview = S.sync(src, manifest_path, panel, transport,
                                source.include, source.exclude, dry_run=True,
-                               verify_placed=source.verify_placed)
+                               verify_placed=full,
+                               on_progress=_watch(progress, bar=False))
+    except gh.Cancelled:
+        return
     finally:
         _done(progress)
+    _log_timing(f"{action} (preview)", source, preview.timings,
+                f"to place {len(plan.to_place)}")
 
     summary = (_plan_text(plan, source, preview) if not plan.is_empty
                else "Everything is up to date.")
     check = S.check_lines(preview.check)
     if check:
         summary += "\n\n" + "\n".join(check)
+    elif full:
+        summary += ("\n\nFusion wouldn't let Detent read the folders, so the "
+                    "check didn't run. Wait a minute and try again.")
     if preview.occupied:
         # Warn now, before the upload. These are counted in the plan above.
         summary += ("\n\nNot uploadable - a file of that name is already in "
@@ -302,11 +353,18 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
         if len(preview.occupied) > 5:
             summary += f"\n    ... and {len(preview.occupied) - 5} more"
     if not write:
-        ui.messageBox(summary, "Detent - preview")
+        ui.messageBox(f"{summary}\n\nTook {S.timing_text(preview.timings)}.",
+                      "Detent - preview")
         return
 
     # Ask before uploading, counting new and missing files.
     n = S.upload_count(plan, preview)
+    if full and not n:
+        # Nothing to put back, so the check is the result. Running the
+        # upload pass would read every folder a second time for nothing.
+        ui.messageBox(f"{summary}\n\nTook {S.timing_text(preview.timings)}.",
+                      "Detent - check")
+        return
     if n:
         warn = ""
         if n >= LARGE_SYNC:
@@ -324,22 +382,12 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     # Sized by every file being sent, including missing ones.
     progress.show("Detent", "Starting...", 0, max(len(plan.to_place), 1))
 
-    def on_progress(i, total, label):
-        # Returning False cancels the sync.
-        if progress.wasCancelled:
-            return False
-        if label:
-            progress.message = label.replace("%", "%%")
-        progress.progressValue = min(max(i, 0), total)
-        adsk.doEvents()
-        return True
-
     try:
         # Same commit as the preview, in case the branch moved since.
         _plan2, report = S.sync(src, manifest_path, panel, transport,
                                 source.include, source.exclude,
-                                dry_run=False, on_progress=on_progress,
-                                verify_placed=source.verify_placed,
+                                dry_run=False, on_progress=_watch(progress),
+                                verify_placed=full,
                                 commit=plan.commit)
     except gh.Cancelled:
         _done(progress)
@@ -349,6 +397,9 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool):
     finally:
         _done(progress)
 
+    _log_timing(action, source, report.timings,
+                f"added {len(report.added)} still-uploading {len(report.pending)} "
+                f"failed {len(report.failures)}")
     ui.messageBox(_report_text(report, manifest_path), "Detent - done")
 
 
@@ -362,20 +413,26 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
             return
 
     progress = ui.createProgressDialog()
-    progress.isCancelButtonShown = False
-    progress.show("Detent", "Scanning existing library...", 0, 1)
+    progress.isCancelButtonShown = True
+    progress.show("Detent", "Reading the library on GitHub...", 0, 1)
     adsk.doEvents()
+    started = time.time()
     try:
         manifest, stats = S.adopt_existing(
             src, manifest_path, panel, transport, at_ref,
-            source.include, dry_run=True)
+            source.include, dry_run=True,
+            on_progress=_watch(progress, bar=False))
+    except gh.Cancelled:
+        return
     finally:
         _done(progress)
+    _log_timing("Adopt", source, {"read": time.time() - started},
+                f"matched {stats['matched']} of {stats['in_release']}")
 
     known = at_ref or "unknown"
     text = (f"Adopt {src.repo} at {known}\n\n"
             f"  files in that release   {stats['in_release']}\n"
-            f"  files in your project   {stats['in_panel']}\n"
+            f"  files in those folders  {stats['in_panel']}\n"
             f"  matched                 {stats['matched']}\n"
             f"  not found locally       {stats['missing']}\n\n"
             "Adopting uploads nothing. It records what you already have so "
@@ -444,6 +501,12 @@ def _report_text(report, manifest_path) -> str:
     if report.unmappable:
         lines += ["", "Blocked - unmappable paths:"]
         lines += [f"  {p}: {m}" for p, m in report.unmappable[:5]]
+    if report.pending:
+        lines += ["", f"Still uploading in Fusion ({len(report.pending)}). This "
+                      "is normal for big parts.",
+                  "  Keep Fusion open until its uploads finish.",
+                  "  Detent confirms them the next time you run Sync now. "
+                  "Nothing is uploaded twice."]
     if report.failures:
         lines += ["", "Failures:"]
         lines += [f"  {p}: {m}" for p, m in report.failures[:8]]
@@ -463,6 +526,8 @@ def _report_text(report, manifest_path) -> str:
     if report.renamed:
         lines += ["", "Renamed by Fusion (recorded):"]
         lines += [f"  {p} -> {n}" for p, n in report.renamed[:5]]
+    if report.timings:
+        lines += ["", f"Took {S.timing_text(report.timings)}."]
     lines += ["", manifest_path]
     return "\n".join(lines)
 

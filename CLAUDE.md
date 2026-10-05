@@ -12,6 +12,14 @@ Notes for working on Detent. Read before changing anything.
   uploads, Fusion reports a local file path instead.
 - Fusion's data calls can fail for a moment. Retry them, and never let one
   failure end a sync or cost a download.
+- Every request to Fusion is slow. Fetch `dataFolders` and `dataFiles` once
+  per folder, keep what you learned for the run, and never list a folder you
+  just made.
+- Sync now and Preview look only at the folders they'll put files into. Only
+  Check library reads everything.
+- Don't make the user wait for Fusion's uploads. Hand off, wait a short fixed
+  time, and confirm the rest on the next sync.
+- Don't guess where time goes. Read `state/timing.log`.
 - Every fix needs a test that fails without it. Revert the fix to confirm.
 - Commits: conventional commits with plain, technical names. Author and
   committer are `reerooryu <reerooryu@users.noreply.github.com>`. No trailers,
@@ -70,6 +78,7 @@ One line per commit, oldest first.
 - `docs(readme): explain where synced files are stored`
 - `docs(readme): use the measured full-zip and batch import times`
 - `fix(sync): retry Fusion folder errors and open folders before downloading` — a full sync downloaded everything, then died on the first upload.
+- `perf(sync): read only the folders a sync touches and stop waiting on uploads` — a full install took 49 min 42 s: 25 before sending, 3 sending, 22 waiting.
 
 ## Push
 

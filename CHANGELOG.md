@@ -2,7 +2,7 @@
 
 Use the latest release. Older releases are kept for reference and marked broken.
 
-## v0.4.2 — Faster downloads, a folder check, and a tracking fix
+## v0.4.2 — Much less waiting, a library check, and a tracking fix
 
 - Fixed: files that were still uploading could be recorded under a temporary
   local path instead of their Fusion ID. The next Preview then listed them as
@@ -13,8 +13,22 @@ Use the latest release. Older releases are kept for reference and marked broken.
   connection the full library took about 3 minutes instead of about 30.
 - If a lot of downloads fail, for example because GitHub is limiting
   requests, Detent downloads the archive instead.
-- Preview checks the folder: how many files are in it, any duplicate names,
-  and any files Detent doesn't know about.
+- Sync now and Preview no longer read every folder in your library. They
+  compare GitHub with Detent's record and look only at the folders new parts
+  go into.
+- New action: **Check library (slow)**. It reads every folder, puts back
+  parts you deleted by hand, and reports duplicate names and files Detent
+  doesn't know about. Sync now used to do this on every run.
+- Detent waits at most two minutes for Fusion to confirm uploads, instead of
+  one second per part. Parts Fusion is still uploading are listed as
+  `still uploading`, not `failed`. The next Sync now confirms them.
+- Asks Fusion for far less: each folder is read once, and folders Detent has
+  just made aren't read at all.
+- Adopt reads only the folders the release uses. It shows progress and can be
+  cancelled.
+- Preview no longer creates the library folder.
+- Every box says how long the run took. `state/timing.log` keeps a line per
+  run with the time for each part.
 - Preview and the upload prompt show how much will be downloaded.
 - The upload prompt no longer says Fusion will stop responding.
 - Fusion sometimes refuses to open a folder for a moment. Detent now tries

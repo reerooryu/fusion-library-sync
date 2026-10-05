@@ -593,7 +593,8 @@ class TestAsyncUpload:
                            settle_wait=2.0)
 
         assert rep.added == []
-        assert any("not confirmed" in msg for _, msg in rep.failures)
+        assert rep.pending == ["A/Part.f3d"], "it must be reported as still uploading"
+        assert rep.failures == [], "still uploading is not a failure"
 
     def test_lineage_comes_from_our_own_upload_not_a_name_match(
             self, src, tmp_path):
@@ -1280,51 +1281,102 @@ class TestDownloadProgress:
         assert seen[-1][2] == "Downloading 4/4"
 
 
-class TestSettleDeadlineScales:
-    """The wait for uploads grows with the number of files."""
+class TestConfirmWaitIsBounded:
+    """Detent hands uploads to Fusion and waits a short, fixed time for them
+    to be confirmed. Waiting one second per file made a full library take 20
+    more minutes (5 Oct 2026); Fusion uploads in the background anyway."""
 
-    def test_deadline_grows_with_the_batch(self, src, tmp_path, monkeypatch):
+    def spy_on_settle(self, monkeypatch):
         seen = {}
         real_settle = S.settle
 
         def spy(manifest, panel, selected, report, mpath, handles,
                 on_progress, max_wait, **kw):
-            seen["wait"] = max_wait
-            seen["n"] = len(handles)
+            seen["wait"], seen["n"] = max_wait, len(handles)
             return real_settle(manifest, panel, selected, report, mpath,
                                handles, on_progress, max_wait, **kw)
 
         monkeypatch.setattr(S, "settle", spy)
+        return seen
+
+    def test_the_wait_does_not_grow_with_the_batch(self, src, tmp_path, monkeypatch):
+        seen = self.spy_on_settle(monkeypatch)
         tree = {f"A/P{i}.f3d": f"s{i}" for i in range(400)}
         S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
                FakeTransport(tree), F3D, dry_run=False)
         assert seen["n"] == 400
-        assert seen["wait"] >= 400, f"deadline did not scale: {seen}"
-
-    def test_small_batches_keep_the_floor(self, small_tree, src, tmp_path,
-                                          monkeypatch):
-        seen = {}
-        real_settle = S.settle
-
-        def spy(*a, **kw):
-            seen["wait"] = a[7]
-            return real_settle(*a, **kw)
-
-        monkeypatch.setattr(S, "settle", spy)
-        S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
-               FakeTransport(small_tree), F3D, dry_run=False)
-        assert seen["wait"] == 300.0
+        assert seen["wait"] == S.CONFIRM_WAIT <= 180
 
     def test_an_explicit_wait_still_wins(self, small_tree, src, tmp_path,
                                         monkeypatch):
-        seen = {}
-        real_settle = S.settle
-        monkeypatch.setattr(S, "settle",
-                            lambda *a, **kw: (seen.setdefault("wait", a[7]),
-                                              real_settle(*a, **kw))[1])
+        seen = self.spy_on_settle(monkeypatch)
         S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
                FakeTransport(small_tree), F3D, dry_run=False, settle_wait=7.0)
         assert seen["wait"] == 7.0
+
+    def test_what_fusion_hasnt_confirmed_is_pending_not_failed(
+            self, small_tree, src, tmp_path):
+        panel = FakeDataPanel(temp_ids=10_000)        # never finishes uploading
+        mpath = str(tmp_path / "m.json")
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False, settle_wait=1.2)
+
+        assert sorted(rep.pending) == sorted(small_tree)
+        assert rep.failures == [] and rep.ok
+        assert any(line.startswith("still uploading") for line in rep.lines())
+        m = Manifest.load(mpath)
+        assert all(e.state == INFLIGHT for e in m.files.values())
+        assert m.synced_at, "the sync ran; the uploads are just not confirmed yet"
+
+    def test_cancel_while_confirming_only_stops_the_wait(
+            self, small_tree, src, tmp_path):
+        """The files are already with Fusion. Cancel must not look like a
+        cancelled sync, and must not lose track of them."""
+        panel = FakeDataPanel(temp_ids=10_000)
+        mpath = str(tmp_path / "m.json")
+
+        def stop_when_confirming(i, n, label):
+            return not label.startswith("Confirming")
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False, settle_wait=60.0,
+                            on_progress=stop_when_confirming)
+
+        assert sorted(rep.pending) == sorted(small_tree)
+        assert len(Manifest.load(mpath).in_state(INFLIGHT)) == len(small_tree)
+
+    def test_cancel_between_passes_also_only_stops_the_wait(self, src, tmp_path):
+        tree = {"Bin/One.f3d": "s1", "Bin/Two.f3d": "s2"}
+        panel = FakeDataPanel(temp_ids=10_000)
+        mpath = str(tmp_path / "m.json")
+        asked = []
+
+        def stop_on_the_second_ask(i, n, label):
+            if label.startswith("Confirming"):
+                asked.append(label)
+                return len(asked) < 2
+            return True
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                            dry_run=False, settle_wait=60.0,
+                            on_progress=stop_on_the_second_ask)
+
+        assert sorted(rep.pending) == sorted(tree)
+        assert len(asked) == 2, "one folder: asked before it, then after the pass"
+
+    def test_the_wait_keeps_fusion_responsive(self, small_tree, src, tmp_path):
+        """A plain sleep freezes Fusion's window and its uploads."""
+        waits = []
+
+        class Watching(FakeDataPanel):
+            def wait(self, seconds):
+                waits.append(seconds)
+
+        panel = Watching(deferred=True)               # needs a few passes
+        S.sync(src, str(tmp_path / "m.json"), panel, FakeTransport(small_tree),
+               F3D, dry_run=False, settle_wait=5.0)
+        import inspect
+        assert "time.sleep" not in inspect.getsource(S.settle)
 
 
 class TestDownloadStrategy:
@@ -1854,7 +1906,8 @@ class TestOnlyRealFusionIdsAreRecorded:
         assert len(m.files) == len(small_tree), "an entry was dropped"
         assert all(e.state == INFLIGHT for e in m.files.values())
         assert all(e.lineage is None for e in m.files.values())
-        assert rep.failures, "the unconfirmed files must be reported"
+        assert sorted(rep.pending) == sorted(small_tree), \
+            "the unconfirmed files must be reported"
 
     def test_the_next_sync_confirms_them_without_uploading(self, small_tree, src,
                                                            tmp_path):
@@ -2076,8 +2129,14 @@ class TestFusionFolderErrors:
         m.save(mpath)
 
         class CantLook(FakeDataPanel):
-            def find_by_name(self, folder_id, name):
-                raise RuntimeError("InternalValidationError")
+            """Fusion refuses the first request, which is the recheck."""
+            asked = 0
+
+            def peek_folder(self, folders):
+                self.asked += 1
+                if self.asked == 1:
+                    raise RuntimeError("InternalValidationError")
+                return super().peek_folder(folders)
 
         panel = CantLook()
         plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
@@ -2090,153 +2149,632 @@ class TestFusionFolderErrors:
         assert len(rep.added) == len(small_tree) - 1, "the rest still sync"
 
 
-class TestFusionPanelRetries:
-    """FusionDataPanel against stand-ins for Fusion's folder objects."""
+class TestFusionPanel:
+    """FusionDataPanel against stand-ins for Fusion's folder objects. Every
+    request to Fusion is counted, because requests are what make it slow."""
 
     ERR = "2 : InternalValidationError : status.isOk() && folders"
 
     class Folder:
         def __init__(self, name, fail=0):
             self.name, self.children, self.files = name, [], []
-            self.fail = fail                  # how many calls fail first
+            self.fail = fail                  # how many requests fail first
+            self.folder_requests = 0          # times .dataFolders was fetched
+            self.file_requests = 0            # times .dataFiles was fetched
             self.adds = 0
+
+        def _check(self):
+            if self.fail > 0:
+                self.fail -= 1
+                raise RuntimeError(TestFusionPanel.ERR)
+
+        @property
+        def dataFolders(self):
+            self.folder_requests += 1
             outer = self
 
             class Folders:
                 @property
                 def count(self):
-                    if outer.fail > 0:
-                        outer.fail -= 1
-                        raise RuntimeError(TestFusionPanelRetries.ERR)
+                    outer._check()
                     return len(outer.children)
 
                 def item(self, i):
                     return outer.children[i]
 
                 def add(self, name):
+                    outer._check()
                     outer.adds += 1
-                    child = TestFusionPanelRetries.Folder(name)
+                    child = TestFusionPanel.Folder(name)
                     outer.children.append(child)
                     return child
+
+            return Folders()
+
+        @property
+        def dataFiles(self):
+            self.file_requests += 1
+            outer = self
 
             class Files:
                 @property
                 def count(self):
-                    if outer.fail > 0:
-                        outer.fail -= 1
-                        raise RuntimeError(TestFusionPanelRetries.ERR)
+                    outer._check()
                     return len(outer.files)
 
                 def item(self, i):
                     return outer.files[i]
 
-            self.dataFolders, self.dataFiles = Folders(), Files()
+            return Files()
 
-    def panel(self, project_root, root_path=("T Full",), root=None):
+        def child(self, name):
+            return next(c for c in self.children if c.name == name)
+
+    class File:
+        def __init__(self, name, n):
+            self.name, self.id, self.versionNumber = name, f"urn:x:{n}", 1
+
+    def panel(self, top, root_path=("Lib",)):
         from detent_core.datapanel import FusionDataPanel
         p = object.__new__(FusionDataPanel)           # skip the adsk import
-        p.pauses = []
-        p._pause = p.pauses.append                    # don't really wait
-        p._project = type("Project", (), {"rootFolder": project_root})()
+        p.waits = []
+        p.wait = p.waits.append                       # don't really wait
+        p._project = type("Project", (), {"rootFolder": top})()
         p._root_path = tuple(root_path)
-        p._cache = {}
-        p._root = root if root is not None else p._resolve(project_root, root_path)
+        p._forget()
         return p
 
-    def test_a_call_that_fails_twice_then_works(self):
+    # -- speed -------------------------------------------------------------
+    def test_listing_a_folder_fetches_its_files_once(self):
         top = self.Folder("root")
         p = self.panel(top)
-        p._root.fail = 2
+        folder = p.ensure_folder(("Hardware",))
+        folder.files = [self.File(f"Part {i}", i) for i in range(40)]
+
+        assert len(p.list_folder(folder)) == 40
+        assert folder.file_requests == 1, "fetched dataFiles once per file"
+
+    def test_a_folders_subfolders_are_read_once_however_many_are_opened(self):
+        top = self.Folder("root")
+        lib = self.Folder("Lib")
+        top.children.append(lib)
+        aluminum = self.Folder("Aluminum")
+        lib.children.append(aluminum)
+        aluminum.children = [self.Folder(f"C-Channel {i}") for i in range(60)]
+        p = self.panel(top)
+
+        for i in range(60):
+            p.ensure_folder(("Aluminum", f"C-Channel {i}"))
+
+        assert top.folder_requests == 1
+        assert lib.folder_requests == 1
+        assert aluminum.folder_requests == 1, "re-read 60 siblings 60 times"
+
+    def test_a_folder_just_made_is_never_listed(self):
+        """It's empty, and listing a brand-new folder is what Fusion refused."""
+        top = self.Folder("root")
+        p = self.panel(top)
+
+        p.ensure_folder(("Electronics", "Sensors", "3-Wire"))
+        p.ensure_folder(("Electronics", "Sensors", "Smart"))
+
+        lib = top.child("Lib")
+        electronics = lib.child("Electronics")
+        sensors = electronics.child("Sensors")
+        # Each was only asked to add a subfolder, never to list its own.
+        assert [c.name for c in sensors.children] == ["3-Wire", "Smart"]
+        assert p._children[("Lib", "Electronics")] == {"Sensors": sensors}
+        for made in (lib, electronics, sensors):
+            assert made.folder_requests == made.adds, \
+                f"{made.name} was listed after being created"
+
+    def test_peek_creates_nothing(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+
+        assert p.peek_folder(("Hardware", "Screws")) is None
+        assert p.peek_folder(()) is None
+        assert top.children == [], "peek created the library folder"
+
+    def test_peek_finds_what_exists(self):
+        top = self.Folder("root")
+        lib = self.Folder("Lib")
+        top.children.append(lib)
+        lib.children.append(self.Folder("Hardware"))
+        p = self.panel(top)
+
+        assert p.peek_folder(("Hardware",)) is lib.child("Hardware")
+        assert p.peek_folder(("Motion",)) is None
+
+    def test_opening_the_panel_creates_nothing(self):
+        """Preview opens the panel. It used to create the library folder."""
+        from detent_core.datapanel import FusionDataPanel
+        import inspect
+        assert "ensure" not in inspect.getsource(FusionDataPanel.__init__)
+        assert ".add(" not in inspect.getsource(FusionDataPanel.__init__)
+
+    def test_scan_reads_each_folder_once(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+        a = p.ensure_folder(("A",))
+        b = p.ensure_folder(("A", "B"))
+        a.files = [self.File("One", 1)]
+        b.files = [self.File("Two", 2), self.File("Three", 3)]
+        p._forget()                                   # a fresh run
+        seen = []
+
+        found = p.scan(seen.append)
+
+        assert {k: [f.name for f in v] for k, v in found.items()} == \
+            {("A",): ["One"], ("A", "B"): ["Two", "Three"]}
+        assert a.file_requests == 1 and b.file_requests == 1
+        assert a.folder_requests == 2, "one add at setup, one listing in scan"
+        assert seen == [1, 2, 3], "library root, A, A/B"
+
+    def test_scan_of_a_library_that_isnt_there_is_empty(self):
+        top = self.Folder("root")
+        p = self.panel(top)
+        assert p.scan() == {}
+        assert top.children == []
+
+    # -- errors ------------------------------------------------------------
+    def test_a_request_that_fails_twice_then_works(self):
+        top = self.Folder("root", fail=2)
+        p = self.panel(top)
 
         folder = p.ensure_folder(("Hardware",))
 
         assert folder.name == "Hardware"
-        assert len(p.pauses) == 2, "should have waited between tries"
+        assert len(p.waits) == 2, "should have waited between tries"
 
-    def test_a_retry_does_not_create_the_folder_twice(self):
+    def test_a_failed_create_is_not_repeated_if_it_worked(self):
+        """Fusion can report an error and make the folder anyway."""
         top = self.Folder("root")
+        lib = self.Folder("Lib")
+        top.children.append(lib)
         p = self.panel(top)
-        made = p.ensure_folder(("Hardware",))         # exists now
-        p._cache.clear()
-        made.fail = 1                                 # fails while going deeper
+        p.peek_folder(())                             # lib is known now
 
-        p.ensure_folder(("Hardware", "Screws"))
+        real = self.Folder.dataFolders
+        calls = {"n": 0}
+        made = self.Folder("Hardware")
 
-        assert [c.name for c in p._root.children] == ["Hardware"]
-        assert p._root.adds == 1
+        class MakesItThenErrors:
+            @property
+            def count(self):
+                return len(lib.children)
+
+            def item(self, i):
+                return lib.children[i]
+
+            def add(self, name):
+                calls["n"] += 1
+                lib.children.append(made)
+                raise RuntimeError(TestFusionPanel.ERR)
+
+        lib_cls = type("Lib", (self.Folder,), {
+            "dataFolders": property(lambda self_: MakesItThenErrors())})
+        lib.__class__ = lib_cls
+
+        assert p.ensure_folder(("Hardware",)) is made
+        assert calls["n"] == 1, "created the folder a second time"
+        assert [c.name for c in lib.children] == ["Hardware"]
 
     def test_stale_folder_objects_are_replaced_from_the_project(self):
         top = self.Folder("root")
-        fresh = self.Folder("T Full")
+        fresh = self.Folder("Lib")
         top.children.append(fresh)
-        stale = self.Folder("T Full", fail=10**6)     # never answers again
-        p = self.panel(top, root=stale)
+        p = self.panel(top)
+        stale = self.Folder("Lib", fail=10**6)        # never answers again
+        p._folders[()] = top
+        p._folders[("Lib",)] = stale
 
         folder = p.ensure_folder(("Hardware",))
 
         assert folder in fresh.children, "should have used the live folder"
-        assert p._root is fresh
 
     def test_when_fusion_never_answers_the_error_names_the_folder(self):
         from detent_core.datapanel import PanelError
         top = self.Folder("root", fail=10**6)
-        stale = self.Folder("T Full", fail=10**6)
-        p = self.panel(top, root=stale)
+        p = self.panel(top)
 
         with pytest.raises(PanelError) as err:
             p.ensure_folder(("Hardware", "Screws"))
 
-        assert "T Full/Hardware/Screws" in str(err.value)
+        assert "Lib/Hardware/Screws" in str(err.value)
         assert "InternalValidationError" in str(err.value)
-        assert len(p.pauses) == len(p.RETRY_WAITS)
+
+    def test_peek_reports_a_refusal_the_same_way(self):
+        from detent_core.datapanel import PanelError
+        top = self.Folder("root", fail=10**6)
+        with pytest.raises(PanelError):
+            self.panel(top).peek_folder(("Hardware",))
 
     def test_listing_a_folder_retries(self):
         top = self.Folder("root")
         p = self.panel(top)
-        p._root.fail = 1
-        assert p.list_folder(p._root) == []
-        assert len(p.pauses) == 1
-
-    def test_scan_retries_listing_subfolders(self):
-        top = self.Folder("root")
-        p = self.panel(top)
-        p.ensure_folder(("Hardware",))
-
-        real = p._root.dataFolders            # fails once, then works
-        calls = {"n": 0}
-
-        class Once:
-            @property
-            def count(self):
-                calls["n"] += 1
-                if calls["n"] == 1:
-                    raise RuntimeError(TestFusionPanelRetries.ERR)
-                return real.count
-
-            def item(self, i):
-                return real.item(i)
-
-        p._root.dataFolders = Once()
-        assert p.scan() == {}
-        assert len(p.pauses) == 1
+        folder = p.ensure_folder(("Hardware",))
+        folder.fail = 1
+        assert p.list_folder(folder) == []
+        assert len(p.waits) == 1
 
     def test_an_upload_fusion_refuses_is_a_failed_upload_not_a_crash(self):
-        top = self.Folder("root")
-        p = self.panel(top)
+        p = self.panel(self.Folder("root"))
 
         class Refuses:
             def uploadFile(self, path):
-                raise RuntimeError(TestFusionPanelRetries.ERR)
+                raise RuntimeError(TestFusionPanel.ERR)
 
         with pytest.raises(UploadFailed):
             p.begin_upload(Refuses(), "/tmp/x.f3d", "Part")
 
 
-class TestAddinReportsAFolderFusionWontOpen:
-    def test_the_dialog_says_so_instead_of_a_traceback(self):
-        source = open(os.path.join(os.path.dirname(os.path.dirname(
+class TestRealPanelWithTheSyncEngine:
+    """The real FusionDataPanel, driven by the sync code, against stand-in
+    Fusion objects. Counts requests for a whole run."""
+
+    class Folder(TestFusionPanel.Folder):
+        uploads = 0
+
+        def uploadFile(self, path):
+            cls = TestRealPanelWithTheSyncEngine.Folder
+            cls.uploads += 1
+            name = os.path.basename(path)[:-len(".f3d")]
+            df = TestFusionPanel.File(name, f"up{cls.uploads}")
+            self.files.append(df)
+            return type("Future", (), {"uploadState": 1, "dataFile": df})()
+
+    def fresh_project(self):
+        from detent_core.datapanel import FusionDataPanel
+        self.Folder.uploads = 0
+        # Folders the stub makes must be able to upload too.
+        TestFusionPanel.Folder.uploadFile = self.Folder.uploadFile
+        self.top = self.Folder("root")
+
+        def panel():
+            p = object.__new__(FusionDataPanel)
+            p.wait = lambda seconds: None
+            p._project = type("Project", (), {"rootFolder": self.top})()
+            p._root_path = ("Lib",)
+            p._forget()
+            return p
+        return panel
+
+    def teardown_method(self):
+        if hasattr(TestFusionPanel.Folder, "uploadFile"):
+            del TestFusionPanel.Folder.uploadFile
+
+    def requests(self, folder=None):
+        folder = folder or self.top
+        return (folder.folder_requests + folder.file_requests
+                + sum(self.requests(c) for c in folder.children))
+
+    def test_install_then_update_then_check_then_adopt(self, small_tree, src, tmp_path):
+        panel = self.fresh_project()
+        mpath = str(tmp_path / "m.json")
+        tr = FakeTransport(small_tree)
+        n = len(small_tree)
+
+        # Preview of a fresh install: one request, nothing created.
+        plan, rep = S.sync(src, mpath, panel(), tr, F3D, dry_run=True,
+                           verify_placed=False)
+        assert len(plan.add) == n and self.top.children == []
+        assert self.requests() == 1
+
+        # Install.
+        plan, rep = S.sync(src, mpath, panel(), tr, F3D, dry_run=False,
+                           verify_placed=False)
+        assert len(rep.added) == n and rep.ok and rep.pending == []
+        assert self.Folder.uploads == n
+
+        # Preview when up to date: one request (is the library folder there).
+        before = self.requests()
+        plan, rep = S.sync(src, mpath, panel(), tr, F3D, dry_run=True,
+                           verify_placed=False)
+        assert plan.is_empty
+        assert self.requests() - before == 1
+
+        # A second sync uploads nothing.
+        S.sync(src, mpath, panel(), tr, F3D, dry_run=False, verify_placed=False)
+        assert self.Folder.uploads == n
+
+        # The full check sees every file once and nothing odd.
+        plan, rep = S.sync(src, mpath, panel(), tr, F3D, dry_run=True,
+                           verify_placed=True)
+        assert plan.is_empty
+        assert rep.check.files == n and rep.check.duplicates == {}
+        assert rep.check.untracked == 0
+
+        # Someone else adopts the same library from scratch.
+        other = str(tmp_path / "other.json")
+        m, stats = S.adopt_existing(src, other, panel(), tr, "v2.0.5", F3D,
+                                    dry_run=False)
+        assert stats["matched"] == n and stats["missing"] == 0
+        S.sync(src, other, panel(), tr, F3D, dry_run=False, verify_placed=False)
+        assert self.Folder.uploads == n, "adopted files were uploaded again"
+
+    def test_a_deleted_part_comes_back_through_the_check(self, small_tree, src, tmp_path):
+        panel = self.fresh_project()
+        mpath = str(tmp_path / "m.json")
+        tr = FakeTransport(small_tree)
+        S.sync(src, mpath, panel(), tr, F3D, dry_run=False, verify_placed=False)
+
+        def folders(f):
+            yield f
+            for c in f.children:
+                yield from folders(c)
+        victim = next(f for f in folders(self.top) if f.files)
+        gone = victim.files.pop()
+
+        plan, _ = S.sync(src, mpath, panel(), tr, F3D, dry_run=True,
+                         verify_placed=False)
+        assert plan.is_empty, "an ordinary preview doesn't look for deleted parts"
+
+        plan, rep = S.sync(src, mpath, panel(), tr, F3D, dry_run=False,
+                           verify_placed=True)
+        assert len(plan.missing) == 1 and len(rep.added) == 1
+        assert [f.name for f in victim.files].count(gone.name) == 1
+
+
+class TestFastPath:
+    """An ordinary Preview or Sync looks only at the folders it will put files
+    into. Reading every folder of a big library is the full check's job."""
+
+    def placed(self, tree, src, tmp_path, panel=None):
+        panel = panel or FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False,
+               verify_placed=False)
+        panel.scans, panel.listings = 0, []
+        return panel, mpath
+
+    def test_no_full_scan(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        for dry in (True, False, True):
+            S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                   dry_run=dry, verify_placed=False)
+        assert panel.scans == 0
+
+    def test_up_to_date_preview_asks_fusion_nothing(self, small_tree, src, tmp_path):
+        panel, mpath = self.placed(small_tree, src, tmp_path)
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=True, verify_placed=False)
+
+        assert plan.is_empty
+        assert panel.listings == [] and panel.scans == 0
+
+    def test_an_update_looks_only_where_the_new_files_go(self, src, tmp_path):
+        old = {f"Old/Dir{i}/Part.f3d": f"s{i}" for i in range(30)}
+        panel, mpath = self.placed(old, src, tmp_path)
+        new = dict(old, **{"New/A/One.f3d": "n1", "New/A/Two.f3d": "n2",
+                           "Old/Dir3/Extra.f3d": "n3"})
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(new), F3D,
+                           dry_run=True, verify_placed=False)
+
+        assert len(plan.add) == 3
+        # New/A doesn't exist yet, so only Old/Dir3 can be listed.
+        assert panel.listings == [panel.folders[("Old", "Dir3")]]
+
+    def test_preview_creates_no_folders(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+        S.sync(src, str(tmp_path / "m.json"), panel, FakeTransport(small_tree),
+               F3D, dry_run=True, verify_placed=False)
+        assert list(panel.folders) == [()], "preview created folders"
+
+    def test_a_name_already_in_the_folder_is_still_refused(self, small_tree,
+                                                           src, tmp_path):
+        """The duplicate guard must not depend on the full check."""
+        from detent_core import paths as P
+        victim = sorted(small_tree)[0]
+        pp = P.map_path(victim)
+        panel = FakeDataPanel()
+        panel.upload(panel.ensure_folder(pp.folders), "/tmp/x", pp.name)
+        panel.uploads.clear()
+        mpath = str(tmp_path / "m.json")
+
+        plan, preview = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                               dry_run=True, verify_placed=False)
+        assert [p for p, _n in preview.occupied] == [victim], \
+            "Preview must show the refusal before the user clicks Yes"
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=False, verify_placed=False)
+        assert [p for p, _n in rep.occupied] == [victim]
+        assert pp.name not in panel.uploads
+        assert panel.duplicates() == {}
+
+    def test_the_full_check_still_finds_deleted_files(self, small_tree, src, tmp_path):
+        panel, mpath = self.placed(small_tree, src, tmp_path)
+        gone = panel.folders[next(k for k in panel.folders if k)]
+        for fid in panel.contents:
+            panel.contents[fid] = []
+
+        fast, _ = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                         dry_run=True, verify_placed=False)
+        full, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=True, verify_placed=True)
+
+        assert fast.missing == [], "the fast path doesn't look for deleted files"
+        assert len(full.missing) == len(small_tree)
+        assert panel.scans == 1
+
+    def test_a_library_folder_that_is_gone_is_noticed_without_asking(
+            self, small_tree, src, tmp_path):
+        """Deleting the whole library folder is the one case an ordinary sync
+        must catch: saying "up to date" over nothing would be absurd."""
+        panel, mpath = self.placed(small_tree, src, tmp_path)
+        empty = FakeDataPanel(root_exists=False)      # same project, folder gone
+
+        plan, rep = S.sync(src, mpath, empty, FakeTransport(small_tree), F3D,
+                           dry_run=True, verify_placed=False)
+
+        assert len(plan.missing) == len(small_tree)
+
+    def test_the_full_check_reports_progress_and_can_be_cancelled(
+            self, small_tree, src, tmp_path):
+        panel, mpath = self.placed(small_tree, src, tmp_path)
+        labels = []
+
+        def watch(i, n, label):
+            labels.append(label)
+            return True
+
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=True,
+               verify_placed=True, on_progress=watch)
+        assert any(label.startswith("Checking folder") for label in labels)
+
+        with pytest.raises(gh.Cancelled):
+            S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                   dry_run=True, verify_placed=True,
+                   on_progress=lambda i, n, label: False)
+
+
+class TestRecheckIsOneListingPerFolder:
+    """After a big sync, hundreds of files wait to be confirmed. Listing the
+    folder once per file would read each folder dozens of times."""
+
+    def test_many_waiting_files_in_one_folder(self, src, tmp_path):
+        tree = {f"Bin/Part {i}.f3d": f"s{i}" for i in range(40)}
+        panel = FakeDataPanel(temp_ids=10_000)
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(tree), F3D, dry_run=False,
+               settle_wait=0.0, verify_placed=False)
+        assert len(Manifest.load(mpath).in_state(INFLIGHT)) == 40
+
+        panel.temp_ids = 0                            # Fusion has finished
+        panel.listings = []
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(tree), F3D,
+                           dry_run=False, verify_placed=False)
+
+        assert len(rep.reconciled) == 40
+        assert panel.listings == [panel.folders[("Bin",)]], panel.listings
+        assert panel.uploads.count("Part 0") == 1
+        assert panel.duplicates() == {}
+
+    def test_rechecking_creates_no_folders(self, src, tmp_path):
+        mpath = str(tmp_path / "m.json")
+        m = Manifest(source_id="x", repo=src.repo, ref=src.ref)
+        m.mark_inflight("Gone/Part.f3d")
+        m.save(mpath)
+        panel = FakeDataPanel()
+
+        rep = S.Report()
+        S.reconcile_inflight(Manifest.load(mpath), panel, rep)
+
+        assert list(panel.folders) == [()]
+        assert rep.reconciled == [("Gone/Part.f3d", "not present, will retry")]
+
+
+class TestAdoptReadsOnlyWhatItNeeds:
+    def library(self, tree):
+        from detent_core import paths as P
+        panel = FakeDataPanel()
+        for repo_path in tree:
+            pp = P.map_path(repo_path)
+            panel.upload(panel.ensure_folder(pp.folders), "/tmp/x", pp.name)
+        panel.uploads.clear()
+        panel.listings = []
+        return panel
+
+    def test_one_listing_per_release_folder_and_no_scan(self, small_tree, src, tmp_path):
+        from detent_core import paths as P
+        panel = self.library(small_tree)
+        other = panel.ensure_folder(("My own parts",))
+        panel.upload(other, "/tmp/x", "Mine")
+
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"), panel,
+                                    FakeTransport(small_tree), "v2.0.5", F3D)
+
+        folders = {P.map_path(p).folders for p in small_tree}
+        assert sorted(panel.listings) == sorted(panel.folders[f] for f in folders)
+        assert panel.scans == 0
+        assert stats["matched"] == len(small_tree)
+
+    def test_progress_and_cancel(self, small_tree, src, tmp_path):
+        panel = self.library(small_tree)
+        labels = []
+        S.adopt_existing(src, str(tmp_path / "m.json"), panel,
+                         FakeTransport(small_tree), "v2.0.5", F3D,
+                         on_progress=lambda i, n, label: labels.append(label) or True)
+        assert labels and all(l.startswith("Reading folder") for l in labels)
+
+        with pytest.raises(gh.Cancelled):
+            S.adopt_existing(src, str(tmp_path / "m.json"), panel,
+                             FakeTransport(small_tree), "v2.0.5", F3D,
+                             on_progress=lambda i, n, label: False)
+
+    def test_a_file_still_uploading_is_not_adopted(self, small_tree, src, tmp_path):
+        panel = self.library(small_tree)
+        panel.temp_ids = 10_000
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"), panel,
+                                    FakeTransport(small_tree), "v2.0.5", F3D)
+        assert stats["matched"] == 0 and len(m.files) == 0
+
+
+class TestTimings:
+    def test_every_run_reports_where_the_time_went(self, small_tree, src, tmp_path):
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), FakeDataPanel(),
+                            FakeTransport(small_tree), F3D, dry_run=False)
+        assert list(rep.timings) == ["github", "recheck", "check", "look",
+                                     "folders", "download", "send", "confirm",
+                                     "record"]
+        assert all(t >= 0 for t in rep.timings.values())
+
+    def test_text(self):
+        text = S.timing_text({"github": 0.4, "download": 151.2, "send": 20.0})
+        assert text == "2 min 52 s (download 2 min 31 s, send 20 s)"
+        assert S.timing_text({"github": 0.2}) == "0 s"
+
+
+class TestAddin:
+    """Detent.py needs Fusion to run, so these read its source."""
+
+    def source(self):
+        return open(os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "Detent.py"), encoding="utf-8").read()
-        opening = source.index("panel = FusionDataPanel(project, source.folders)")
-        after = source[opening:opening + 400]
-        assert "except PanelError as exc:" in after
-        assert "restart Fusion" in after
+
+    def test_a_folder_fusion_wont_open_gets_a_message_not_a_traceback(self):
+        source = self.source()
+        handler = source[source.index("except PanelError as exc:"):][:300]
+        assert "restart Fusion" in handler
+
+    def test_only_the_check_action_reads_every_folder(self):
+        source = self.source()
+        assert 'full=action.startswith("Check")' in source
+        assert source.count("verify_placed=full") == 2, \
+            "the preview pass and the upload pass must both follow the action"
+        assert "source.verify_placed" not in source
+
+    def test_a_clean_check_reads_the_folders_once_not_twice(self):
+        source = self.source()
+        stop = source.index("if full and not n:")
+        upload_pass = source.index("dry_run=False, on_progress=_watch(progress)")
+        assert stop < upload_pass
+        assert "return" in source[stop:upload_pass]
+
+    def test_the_check_is_offered_as_its_own_action(self):
+        source = self.source()
+        assert 'CHECK = "Check library (slow)"' in source
+        assert "action.listItems.add(CHECK, False" in source
+
+    def test_still_uploading_is_explained_in_the_done_box(self):
+        source = self.source()
+        assert "Still uploading in Fusion" in source
+        assert "Nothing is uploaded twice" in source
+
+    def test_every_run_is_timed(self):
+        source = self.source()
+        assert source.count("_log_timing(") >= 4      # def + preview, sync, adopt
+        assert "timing.log" in source
+
+
+class TestConfigIgnoresTheOldSwitch:
+    def test_an_old_config_with_verify_placed_still_loads(self):
+        from detent_core.config import Config
+        cfg = Config.from_dict({"schema": 1, "sources": [
+            {"id": "x", "label": "X", "repo": "a/b", "verify_placed": True}]})
+        assert not hasattr(cfg.sources[0], "verify_placed")
+        assert "verify_placed" not in cfg.to_dict()["sources"][0]

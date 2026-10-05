@@ -45,8 +45,6 @@ class SourceConfig:
     include: List[str] = field(default_factory=lambda: ["**/*.f3d"])
     exclude: List[str] = field(default_factory=list)
     folder_path: str = ""                 # below the project root
-    # Check the Data Panel each run for files deleted by hand.
-    verify_placed: bool = True
 
     def __post_init__(self):
         self.repo = normalise_repo(self.repo)
