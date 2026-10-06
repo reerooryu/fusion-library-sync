@@ -16,7 +16,9 @@ Notes for working on Detent. Read before changing anything.
   per folder, keep what you learned for the run, and never list a folder you
   just made.
 - Sync now and Preview look only at the folders they'll put files into. Only
-  Check library reads everything.
+  Verify Integrity reads everything.
+- Action names and their descriptions live in `detent_core/actions.py`. The
+  dialog and the README table must both match it.
 - Don't make the user wait for Fusion's uploads. Hand off, wait a short fixed
   time, and confirm the rest on the next sync.
 - Don't guess where time goes. Read `state/timing.log`.
@@ -78,7 +80,8 @@ One line per commit, oldest first.
 - `docs(readme): explain where synced files are stored`
 - `docs(readme): use the measured full-zip and batch import times`
 - `fix(sync): retry Fusion folder errors and open folders before downloading` — a full sync downloaded everything, then died on the first upload.
-- `perf(sync): read only the folders a sync touches and stop waiting on uploads` — a full install took 49 min 42 s: 25 before sending, 3 sending, 22 waiting.
+- `perf(sync): read only the folders a sync touches and stop waiting on uploads` — a full install took 49 min 42 s: 25 before sending, 3 sending, 22 waiting. After: 7 min 20 s.
+- `feat(ui): rename the check to Verify Integrity and describe each action in the dialog`
 
 ## Push
 

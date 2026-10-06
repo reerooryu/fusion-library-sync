@@ -80,7 +80,7 @@ To try a small part first, see
 3. **Project** and **Folder**: where your library already is
 4. **Action**: Adopt existing library
 5. **Installed release**: the version you have, e.g. `v2.0.5`. Leave it blank
-   if you don't know.
+   if you don't know. This box appears once you pick Adopt.
 6. **OK**, check the number of files it matched, then **Yes**.
 
 This uploads nothing. It only records what you already have. From now on, use
@@ -105,21 +105,26 @@ restart Fusion. Until you do, it is still running the old code.
 
 | Action | What it does | When to use it |
 |---|---|---|
-| **Sync now** | Shows what's new, asks, then uploads it | To get the library, or a new release |
-| **Preview changes** | Shows what Sync now would do. Changes nothing. | To check for updates |
-| **Check library (slow)** | Reads every folder. Puts back parts you deleted, and lists duplicates. | If something looks wrong |
-| **Adopt existing library** | Records the files you already have. Uploads nothing. | Once, if you already have the library |
+| **Sync now** | Gets what's new. Shows you the list and asks before uploading. | To get the library, or a new release |
+| **Preview changes** | Shows what Sync now would do. Changes nothing. | To see if there's an update |
+| **Verify Integrity** | Reads every folder. Puts back parts that were deleted, and lists duplicate names. Slow on a big library. | If something looks wrong |
+| **Adopt existing library** | Records the parts you already have, so they aren't uploaded again. Uploads nothing. | Once, if you imported the library yourself |
+
+Pick one in the **Action** box. The dialog describes the one you've picked
+right underneath.
+
+No action changes or deletes a part you already have.
 
 Sync now and Preview are quick because they don't read your whole library.
 They compare GitHub with Detent's own record, and look only at the folders
 new parts are going into.
 
-## Checking your library
+## Verify Integrity
 
-Sync now and Preview won't notice if you delete a part by hand. **Check
-library** will. It reads every folder, which takes a while on a big library,
-and offers to put back anything that's missing. It ends with a line like
-this:
+Sync now and Preview won't notice if you delete a part by hand. **Verify
+Integrity** will. It reads every folder, which takes a while on a big
+library, and offers to put back anything that's missing. It ends with a line
+like this:
 
 ```
 Folder check: 1198 file(s), 0 duplicate name(s), 0 not tracked by Detent

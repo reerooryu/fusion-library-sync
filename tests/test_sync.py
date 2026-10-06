@@ -2743,7 +2743,7 @@ class TestAddin:
 
     def test_only_the_check_action_reads_every_folder(self):
         source = self.source()
-        assert 'full=action.startswith("Check")' in source
+        assert "full=action == A.VERIFY or bool(stranded)" in source
         assert source.count("verify_placed=full") == 2, \
             "the preview pass and the upload pass must both follow the action"
         assert "source.verify_placed" not in source
@@ -2755,10 +2755,21 @@ class TestAddin:
         assert stop < upload_pass
         assert "return" in source[stop:upload_pass]
 
-    def test_the_check_is_offered_as_its_own_action(self):
+    def test_the_dialog_offers_every_action_and_describes_the_one_picked(self):
         source = self.source()
-        assert 'CHECK = "Check library (slow)"' in source
-        assert "action.listItems.add(CHECK, False" in source
+        assert "for name in A.ORDER:" in source
+        assert 'inputs.itemById("about").text = A.ABOUT.get(picked, "")' in source
+        assert 'A.ABOUT[A.ORDER[0]]' in source, "the default action needs its text too"
+
+    def test_installed_release_shows_only_for_adopt(self):
+        source = self.source()
+        assert "adopt_ref.isVisible = False" in source
+        assert 'inputs.itemById("adopt_ref").isVisible = picked == A.ADOPT' in source
+
+    def test_no_action_is_matched_by_a_typed_out_name(self):
+        """A renamed action must not quietly stop being recognised."""
+        source = self.source()
+        assert "action.startswith(" not in source
 
     def test_still_uploading_is_explained_in_the_done_box(self):
         source = self.source()
@@ -2778,3 +2789,29 @@ class TestConfigIgnoresTheOldSwitch:
             {"id": "x", "label": "X", "repo": "a/b", "verify_placed": True}]})
         assert not hasattr(cfg.sources[0], "verify_placed")
         assert "verify_placed" not in cfg.to_dict()["sources"][0]
+
+
+class TestActions:
+    def root(self):
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_four_actions_each_with_a_description(self):
+        from detent_core import actions as A
+        assert A.ORDER == ("Sync now", "Preview changes", "Verify Integrity",
+                           "Adopt existing library")
+        assert set(A.ABOUT) == set(A.ORDER)
+        assert all(len(text) > 20 for text in A.ABOUT.values())
+
+    def test_a_description_fits_the_dialog(self):
+        """The box under Action is three lines tall."""
+        from detent_core import actions as A
+        assert all(len(text) <= 200 for text in A.ABOUT.values()), \
+            {k: len(v) for k, v in A.ABOUT.items()}
+
+    def test_the_readme_explains_every_action_by_its_name(self):
+        from detent_core import actions as A
+        readme = open(os.path.join(self.root(), "README.md"), encoding="utf-8").read()
+        table = readme[readme.index("## The four actions"):]
+        for name in A.ORDER:
+            assert f"| **{name}** |" in table, f"{name} is missing from the table"
+        assert "Check library" not in readme

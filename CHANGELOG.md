@@ -16,9 +16,11 @@ Use the latest release. Older releases are kept for reference and marked broken.
 - Sync now and Preview no longer read every folder in your library. They
   compare GitHub with Detent's record and look only at the folders new parts
   go into.
-- New action: **Check library (slow)**. It reads every folder, puts back
-  parts you deleted by hand, and reports duplicate names and files Detent
-  doesn't know about. Sync now used to do this on every run.
+- New action: **Verify Integrity**. It reads every folder, puts back parts
+  you deleted by hand, and reports duplicate names and files Detent doesn't
+  know about. Sync now used to do this on every run.
+- The dialog describes the action you've picked, and shows the Installed
+  release box only for Adopt.
 - Detent waits at most two minutes for Fusion to confirm uploads, instead of
   one second per part. Parts Fusion is still uploading are listed as
   `still uploading`, not `failed`. The next Sync now confirms them.

@@ -26,6 +26,7 @@ for _stale in [n for n in list(sys.modules)
 
 from detent_core import VERSION as CORE_VERSION  # noqa: E402
 from detent_core.build import build_id, version_line  # noqa: E402
+from detent_core import actions as A           # noqa: E402
 from detent_core import config as C            # noqa: E402
 from detent_core import github as gh           # noqa: E402
 from detent_core import sync as S              # noqa: E402
@@ -37,7 +38,6 @@ CMD_ID = "DetentSyncLibrary"
 CMD_NAME = "Sync Library"
 CMD_TIP = ("Sync a Git-hosted CAD library into this project. Downloads only "
            "what changed. Never modifies a file it has already placed.")
-CHECK = "Check library (slow)"
 PANEL_ID = "SolidScriptsAddinsPanel"    # Utilities tab > ADD-INS
 LARGE_SYNC = 100                        # files; above this, suggest a smaller test first
 
@@ -157,16 +157,14 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             action = inputs.addDropDownCommandInput(
                 "action", "Action", adsk.core.DropDownStyles.TextListDropDownStyle)
-            action.listItems.add("Sync now", True, "")
-            action.listItems.add("Preview changes", False, "")
-            action.listItems.add(CHECK, False, "")
-            action.listItems.add("Adopt existing library", False, "")
-            action.tooltip = (
-                "Sync uploads new files only.\n"
-                "Preview lists what would change and writes nothing.\n"
-                "Check reads every folder: it finds parts deleted by hand and "
-                "puts them back, and lists duplicates.\n"
-                "Adopt claims a library you already imported, without uploading.")
+            for name in A.ORDER:
+                action.listItems.add(name, name == A.ORDER[0], "")
+            action.tooltip = "What each action does is shown below."
+
+            # Says what the picked action does. Updated when it changes.
+            about = inputs.addTextBoxCommandInput(
+                "about", "", A.ABOUT[A.ORDER[0]], 3, True)
+            about.isFullWidth = True
 
             adopt_ref = inputs.addStringValueInput(
                 "adopt_ref", "Installed release", "")
@@ -174,6 +172,8 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 "For Adopt: the release tag your existing library came from, "
                 "e.g. v2.0.3. Leave blank if you do not know - files are then "
                 "marked unverified rather than assumed current.")
+            # Only Adopt uses it.
+            adopt_ref.isVisible = False
 
             note = inputs.addTextBoxCommandInput(
                 "note", "", _config_note(cfg.sources[0] if cfg.sources else None),
@@ -192,7 +192,8 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
 
 class InputChangedHandler(adsk.core.InputChangedEventHandler):
-    """Update Folder and the note when a different library is picked."""
+    """Update Folder and the note when a different library is picked, and the
+    description when a different action is picked."""
 
     def __init__(self, cfg):
         super().__init__()
@@ -200,9 +201,14 @@ class InputChangedHandler(adsk.core.InputChangedEventHandler):
 
     def notify(self, args):
         try:
+            inputs = args.inputs
+            if args.input.id == "action":
+                picked = inputs.itemById("action").selectedItem.name
+                inputs.itemById("about").text = A.ABOUT.get(picked, "")
+                inputs.itemById("adopt_ref").isVisible = picked == A.ADOPT
+                return
             if args.input.id != "source":
                 return
-            inputs = args.inputs
             label = inputs.itemById("source").selectedItem.name
             source = next((s for s in self.cfg.sources if s.label == label), None)
             if source is None:
@@ -266,22 +272,22 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
 
             source.folder_path = folder_path
             # Preview changes nothing, including config.json.
-            if not action.startswith("Preview"):
+            if action != A.PREVIEW:
                 cfg.save(CONFIG_PATH)
 
             panel = FusionDataPanel(project, source.folders)
             src = gh.Source(source.repo, source.ref, source.subpath)
             transport = gh.UrllibTransport()
 
-            if action.startswith("Adopt"):
+            if action == A.ADOPT:
                 _do_adopt(ui, src, manifest_path, panel, transport, source, adopt_ref)
             else:
                 # A changed folder needs the full check: the record says the
                 # files are placed, and only reading the folder shows they
                 # aren't in the new one.
                 _do_sync(ui, src, manifest_path, panel, transport, source,
-                         write=not action.startswith("Preview"),
-                         full=action.startswith("Check") or bool(stranded))
+                         write=action != A.PREVIEW,
+                         full=action == A.VERIFY or bool(stranded))
         except PanelError as exc:
             ui.messageBox(
                 f"{exc}\n\nWait a minute and try again. If it keeps "
@@ -320,7 +326,7 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool,
     GitHub with its own record and looks only at the folders it will put
     files into.
     """
-    action = CHECK if full else ("Sync now" if write else "Preview changes")
+    action = A.VERIFY if full else (A.SYNC if write else A.PREVIEW)
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = full
     progress.show("Detent", "Reading the library on GitHub...", 0, 1)
@@ -363,7 +369,7 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool,
         # Nothing to put back, so the check is the result. Running the
         # upload pass would read every folder a second time for nothing.
         ui.messageBox(f"{summary}\n\nTook {S.timing_text(preview.timings)}.",
-                      "Detent - check")
+                      "Detent - verify integrity")
         return
     if n:
         warn = ""
