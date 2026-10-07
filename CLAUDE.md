@@ -19,8 +19,8 @@ Notes for working on Detent. Read before changing anything.
   Verify Integrity reads everything.
 - Action names and their descriptions live in `detent_core/actions.py`. The
   dialog and the README table must both match it.
-- Don't make the user wait for Fusion's uploads. Hand off, wait a short fixed
-  time, and confirm the rest on the next sync.
+- Don't make the user wait for Fusion's uploads. Hand the parts over, finish,
+  and confirm them on the next sync.
 - Don't guess where time goes. Read `state/timing.log`.
 - Every fix needs a test that fails without it. Revert the fix to confirm.
 - Commits: conventional commits with plain, technical names. Author and
@@ -82,6 +82,7 @@ One line per commit, oldest first.
 - `fix(sync): retry Fusion folder errors and open folders before downloading` — a full sync downloaded everything, then died on the first upload.
 - `perf(sync): read only the folders a sync touches and stop waiting on uploads` — a full install took 49 min 42 s: 25 before sending, 3 sending, 22 waiting. After: 7 min 20 s.
 - `feat(ui): rename the check to Verify Integrity and describe each action in the dialog`
+- `perf(sync): don't wait for Fusion to confirm uploads` — a 19-second update took 2 minutes and confirmed nothing.
 
 ## Push
 

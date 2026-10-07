@@ -64,11 +64,11 @@ Pick the one that fits you.
 5. **Action**: Sync now → **OK**
 6. Check the list it shows you, then click **Yes**.
 
-The whole library is about 1,200 files and 2 GB. Detent downloads it, hands
-every part to Fusion, and waits up to two minutes for Fusion to confirm them.
-Fusion then keeps uploading in the background, so the done box will say some
-parts are `still uploading`. **Keep Fusion open until its uploads finish.**
-Run Sync now again later and Detent confirms them. Nothing is uploaded twice.
+The whole library is about 1,200 files and 2 GB. Detent downloads it and
+hands every part to Fusion, which took about 5 minutes in our test. Fusion
+then uploads the parts in the background, so the done box says most of them
+are `still uploading`. **Keep Fusion open until its uploads finish.** The
+next time you run Sync now, Detent confirms them. Nothing is uploaded twice.
 
 To try a small part first, see
 [Sync part of the library](#sync-part-of-the-library).

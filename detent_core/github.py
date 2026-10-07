@@ -207,16 +207,30 @@ def human_duration(seconds: float) -> str:
     return f"{seconds / 3600:.1f} hours"
 
 
-# Rough cost per file: download, start the upload, confirm it. Not measured
-# on a full sync.
-SECONDS_PER_UPLOAD = 2.0
+# What a sync costs, measured on one Mac on 6-7 Oct 2026:
+#   making 115 folders took 93 s; handing 1,165 files to Fusion took 162 s;
+#   1.9 GB downloaded in 65 s and 250 MB in 11 s (about 25 MB/s).
+# The download rate below is half the measured one, since connections vary.
+# This is the time until Detent is done. Fusion then uploads in the
+# background, and that isn't counted.
+SECONDS_TO_START = 5.0
+SECONDS_PER_FOLDER = 0.8
+SECONDS_PER_FILE = 0.15
+DOWNLOAD_BYTES_PER_SECOND = 12_000_000
 
 
-def estimate(n_files: int, total_bytes: int = 0) -> str:
+def estimate_seconds(n_files: int, total_bytes: int = 0, folders: int = 0) -> float:
+    return (SECONDS_TO_START + folders * SECONDS_PER_FOLDER
+            + n_files * SECONDS_PER_FILE
+            + total_bytes / DOWNLOAD_BYTES_PER_SECOND)
+
+
+def estimate(n_files: int, total_bytes: int = 0, folders: int = 0) -> str:
     parts = [f"{n_files} file(s)"]
     if total_bytes:
         parts.append(human_bytes(total_bytes))
-    parts.append(f"about {human_duration(n_files * SECONDS_PER_UPLOAD)}")
+    seconds = estimate_seconds(n_files, total_bytes, folders)
+    parts.append(f"about {human_duration(seconds)}")
     return ", ".join(parts)
 
 

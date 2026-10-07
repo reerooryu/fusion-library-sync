@@ -21,9 +21,12 @@ Use the latest release. Older releases are kept for reference and marked broken.
   know about. Sync now used to do this on every run.
 - The dialog describes the action you've picked, and shows the Installed
   release box only for Adopt.
-- Detent waits at most two minutes for Fusion to confirm uploads, instead of
-  one second per part. Parts Fusion is still uploading are listed as
-  `still uploading`, not `failed`. The next Sync now confirms them.
+- Detent no longer waits for Fusion to confirm uploads. It hands the parts
+  over and finishes, and Fusion uploads them in the background. Those parts
+  are listed as `still uploading`, not `failed`, and the next Sync now
+  confirms them. It used to wait one second per part.
+- The time estimate now counts what Detent does: making folders, downloading
+  and handing parts to Fusion. It used to guess 2 seconds a part.
 - Asks Fusion for far less: each folder is read once, and folders Detent has
   just made aren't read at all.
 - Adopt reads only the folders the release uses. It shows progress and can be

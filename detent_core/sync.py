@@ -23,10 +23,11 @@ from .manifest import Manifest, ADOPTED, INFLIGHT, PLACED, adopt
 
 Progress = Callable[[int, int, str], None]
 
-# How long to wait for Fusion to confirm uploads before handing back. Fusion
-# keeps uploading in the background; the next sync confirms what's left.
-# Waiting for a whole library took 20 minutes (5 Oct 2026).
-CONFIRM_WAIT = 120.0
+# How long to wait for Fusion to confirm uploads before handing back. Zero:
+# don't wait. Fusion uploads in the background and the next sync confirms.
+# Waiting made a 19-second update take 2 minutes with nothing confirmed
+# (7 Oct 2026), and a full library 20 minutes (5 Oct 2026).
+CONFIRM_WAIT = 0.0
 
 
 class Clock:
@@ -79,6 +80,8 @@ class Report:
     pending: List[str] = field(default_factory=list)
     # Seconds per part of the run. See Clock.
     timings: Dict[str, float] = field(default_factory=dict)
+    # Folders the new files go into. Used for the time estimate.
+    target_folders: int = 0
 
     @property
     def ok(self) -> bool:
@@ -87,12 +90,14 @@ class Report:
 
     def lines(self) -> List[str]:
         rows = [
-            ("added", self.added, ""),
+            # Everything handed to Fusion, confirmed or not.
+            ("added", self.added + self.pending, ""),
             ("re-placed", self.replaced, "(were gone from the Data Panel)"),
             ("changed upstream", self.skipped_changed, "(Phase 2)"),
             ("gone upstream", self.skipped_orphan, "(cannot delete)"),
             ("unverified", self.unverified, ""),
-            ("still uploading", self.pending, "(confirmed on the next sync)"),
+            ("still uploading", self.pending,
+             "of those (confirmed on the next sync)"),
             ("reconciled", self.reconciled, ""),
             ("renamed", self.renamed, "(see detail)"),
             ("NAME TAKEN", self.occupied, "(not uploaded)"),
@@ -293,6 +298,9 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
 
     Waits at most `max_wait` seconds. Whatever Fusion hasn't confirmed by
     then goes in report.pending. Cancel during the wait just stops waiting.
+
+    With max_wait 0 it doesn't wait or read any folder. It asks each upload
+    handle once, which is cheap, and leaves the rest for the next sync.
     """
     pre_existing = pre_existing or set()
     pending = dict(handles)
@@ -306,6 +314,29 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
         return not (on_progress and on_progress(
             done, total,
             f"Confirming {done}/{total} - Cancel to stop waiting") is False)
+
+    def ask_handles() -> None:
+        for repo_path, handle in list(pending.items()):
+            try:
+                placed = panel.poll_upload(handle)
+            except UploadFailed as exc:
+                # Stays inflight: it may still have landed.
+                report.failures.append((repo_path, str(exc)))
+                pending.pop(repo_path, None)
+                continue
+            if placed is not None and is_fusion_id(placed.lineage):
+                manifest.record(repo_path, selected.get(repo_path, ""),
+                                placed.lineage, placed.version, state=PLACED)
+                report.added.append(repo_path)
+                pending.pop(repo_path, None)
+
+    if max_wait <= 0:
+        if on_progress:
+            on_progress(total, total, "Finishing")
+        ask_handles()
+        manifest.save(manifest_path)
+        report.pending.extend(sorted(pending))
+        return
 
     stopped = False
     while pending and time.time() < deadline and not stopped:
@@ -374,19 +405,7 @@ def settle(manifest: Manifest, panel: DataPanel, selected: Dict[str, str],
             break
 
         # Ask the upload handle about anything not found in the folder.
-        for repo_path, handle in list(pending.items()):
-            try:
-                placed = panel.poll_upload(handle)
-            except UploadFailed as exc:
-                # Stays inflight: it may still have landed.
-                report.failures.append((repo_path, str(exc)))
-                pending.pop(repo_path, None)
-                continue
-            if placed is not None and is_fusion_id(placed.lineage):
-                manifest.record(repo_path, selected.get(repo_path, ""),
-                                placed.lineage, placed.version, state=PLACED)
-                report.added.append(repo_path)
-                pending.pop(repo_path, None)
+        ask_handles()
 
         manifest.save(manifest_path)
         if not carry_on():
@@ -472,6 +491,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                and pp.name in taken.get(pp.folders, ())}
     report.occupied = [(pp.repo_path, pp.name) for pp in mapped
                        if pp.repo_path in blocked]
+    report.target_folders = len({pp.folders for pp in mapped
+                                 if pp.repo_path not in blocked})
 
     if dry_run:
         return report
@@ -557,7 +578,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                    pre_existing=pre_existing)
         clock.lap("confirm")
 
-        report.replaced = [p for p in report.added if p in replace]
+        report.replaced = [p for p in report.added + report.pending
+                           if p in replace]
 
         manifest.save(manifest_path)
     finally:
@@ -576,7 +598,8 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
          fallback_at: int = gh.ARCHIVE_FALLBACK_MIN,
          settle_wait: Optional[float] = None,
          verify_placed: bool = True,
-         commit: Optional[str] = None) -> Tuple[PL.Plan, Report]:
+         commit: Optional[str] = None,
+         recheck: Optional[bool] = None) -> Tuple[PL.Plan, Report]:
     """Run one full sync. Defaults to dry_run.
 
     verify_placed: the full check. Reads every folder to find files deleted
@@ -584,6 +607,9 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     Without it, only the folders that will receive files are looked at.
     commit: use this commit instead of resolving `ref` again, so the upload
     matches the preview. The resolved commit is returned as Plan.commit.
+    recheck: confirm earlier uploads Fusion hadn't finished. Updates Detent's
+    record but nothing in Fusion. Defaults to on for a real run and off for a
+    dry run; Verify Integrity turns it on for its dry run.
     """
     transport = transport or gh.UrllibTransport()
     clock = Clock()
@@ -605,7 +631,7 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
             entry.state, entry.lineage = INFLIGHT, None
 
     pre = Report()
-    if not dry_run:
+    if (not dry_run) if recheck is None else recheck:
         reconcile_inflight(manifest, panel, pre, selected)
         manifest.save(manifest_path)
     clock.lap("recheck")

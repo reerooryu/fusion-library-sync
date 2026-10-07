@@ -332,9 +332,11 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool,
     progress.show("Detent", "Reading the library on GitHub...", 0, 1)
     adsk.doEvents()
     try:
+        # Verify also confirms earlier uploads first, so parts Fusion has
+        # finished since aren't counted as unknown files.
         plan, preview = S.sync(src, manifest_path, panel, transport,
                                source.include, source.exclude, dry_run=True,
-                               verify_placed=full,
+                               verify_placed=full, recheck=full,
                                on_progress=_watch(progress, bar=False))
     except gh.Cancelled:
         return
@@ -374,11 +376,12 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool,
     if n:
         warn = ""
         if n >= LARGE_SYNC:
-            warn = ("\n\nThis is a big sync. Keep Fusion open until it "
-                    "finishes. To try a few files first, narrow 'include' in "
-                    "config.json.")
+            warn = ("\n\nThis is a big sync. To try a few files first, "
+                    "narrow 'include' in config.json.")
+        about = gh.estimate(n, preview.download_bytes, preview.target_folders)
         answer = ui.messageBox(
-            f"{summary}\n\nUpload {gh.estimate(n, preview.download_bytes)}?{warn}",
+            f"{summary}\n\nUpload {about}?\nFusion then finishes "
+            f"uploading in the background.{warn}",
             "Detent", adsk.core.MessageBoxButtonTypes.YesNoButtonType)
         if answer != adsk.core.DialogResults.DialogYes:
             return
@@ -404,8 +407,8 @@ def _do_sync(ui, src, manifest_path, panel, transport, source, write: bool,
         _done(progress)
 
     _log_timing(action, source, report.timings,
-                f"added {len(report.added)} still-uploading {len(report.pending)} "
-                f"failed {len(report.failures)}")
+                f"sent {len(report.added) + len(report.pending)} "
+                f"confirmed {len(report.added)} failed {len(report.failures)}")
     ui.messageBox(_report_text(report, manifest_path), "Detent - done")
 
 
@@ -484,7 +487,8 @@ def _plan_text(plan, source, preview) -> str:
     place = plan.to_place
     if place:
         lines += ["", "Estimated: " + gh.estimate(S.upload_count(plan, preview),
-                                                 preview.download_bytes)]
+                                                 preview.download_bytes,
+                                                 preview.target_folders)]
         lines += ["", "First few:"]
         lines += [f"    {_short(p)}" for p in place[:8]]
         if len(place) > 8:
@@ -508,8 +512,8 @@ def _report_text(report, manifest_path) -> str:
         lines += ["", "Blocked - unmappable paths:"]
         lines += [f"  {p}: {m}" for p, m in report.unmappable[:5]]
     if report.pending:
-        lines += ["", f"Still uploading in Fusion ({len(report.pending)}). This "
-                      "is normal for big parts.",
+        lines += ["", f"Fusion is still uploading {len(report.pending)} of "
+                      "them in the background. That's normal.",
                   "  Keep Fusion open until its uploads finish.",
                   "  Detent confirms them the next time you run Sync now. "
                   "Nothing is uploaded twice."]

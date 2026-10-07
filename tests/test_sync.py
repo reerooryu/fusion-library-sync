@@ -432,6 +432,16 @@ class TestEstimates:
         assert "2.2 GB" in text, "size is the part that surprises people"
         assert "about" in text
 
+    def test_the_estimate_is_the_time_until_detent_is_done(self):
+        """It said 66 seconds for 33 files (2 s each) when the work took 19.
+        Measured 6-7 Oct 2026: a 33-file, 251 MB update into 6 folders took
+        19 s; a 1,165-file, 2.0 GB install into 115 folders took 5 min 20 s."""
+        update = gh.estimate_seconds(33, 251_000_000, 6)
+        install = gh.estimate_seconds(1165, 2_044_000_000, 115)
+        assert 19 <= update <= 45, update
+        assert 320 <= install <= 600, install
+        assert "about 36 sec" in gh.estimate(33, 251_000_000, 6)
+
     def test_estimate_grows_with_the_work(self):
         import re
 
@@ -556,7 +566,8 @@ class TestAsyncUpload:
         tr = FakeTransport(small_tree)
         mpath = str(tmp_path / "m.json")
 
-        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False)
+        plan, rep = S.sync(src, mpath, panel, tr, F3D, dry_run=False,
+                           settle_wait=5.0)
 
         assert len(rep.added) == len(small_tree)
         assert panel.total_files == len(small_tree)
@@ -698,9 +709,10 @@ class TestSettleResilience:
         """Files appear in the folder at once; upload status takes 18-50 s."""
         import inspect
         body = inspect.getsource(S.settle)
-        assert "list_folder" in body, "the fast path is the folder scan"
         assert "poll_upload" in body, "the future is the fallback"
-        assert body.index("list_folder") < body.index("poll_upload")
+        waiting = body[body.index("while pending"):]
+        assert "list_folder" in waiting, "the fast path is the folder scan"
+        assert waiting.index("list_folder") < waiting.index("ask_handles()")
 
     def test_nothing_calls_refresh_on_a_folder(self):
         """DataFolder has no refresh(). Checks the code, not the comments."""
@@ -1279,6 +1291,124 @@ class TestDownloadProgress:
                        on_progress=lambda i, n, lbl: seen.append((i, n, lbl)))          # force the per-file path
         assert [i for i, _n, _l in seen] == [1, 2, 3, 4]
         assert seen[-1][2] == "Downloading 4/4"
+
+
+class TestDetentDoesNotWaitForFusion:
+    """Sending 33 parts took 19 seconds; waiting for Fusion to confirm them
+    took two more minutes and confirmed none (7 Oct 2026). Fusion uploads in
+    the background, so Detent hands over and finishes."""
+
+    def test_by_default_it_neither_waits_nor_reads_folders(self, small_tree,
+                                                           src, tmp_path):
+        waits = []
+
+        class Watching(FakeDataPanel):
+            def wait(self, seconds):
+                waits.append(seconds)
+
+        panel = Watching(deferred=True)               # nothing confirmed yet
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=True,
+               verify_placed=False)
+        panel.listings = []
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False, verify_placed=False)
+
+        assert S.CONFIRM_WAIT == 0
+        assert waits == [], "it waited"
+        assert panel.listings == [], "it read folders to confirm uploads"
+        assert sorted(rep.pending) == sorted(small_tree)
+        assert rep.failures == [] and rep.ok
+        assert rep.timings["confirm"] < 1.0
+
+    def test_uploads_already_finished_are_confirmed_on_the_spot(
+            self, small_tree, src, tmp_path):
+        """Asking the upload handle once is free, so do that much."""
+        panel = FakeDataPanel()                       # finishes at once
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel,
+                            FakeTransport(small_tree), F3D, dry_run=False,
+                            verify_placed=False)
+        assert len(rep.added) == len(small_tree) and rep.pending == []
+
+    def test_the_next_sync_confirms_them_and_uploads_nothing(self, small_tree,
+                                                             src, tmp_path):
+        panel = FakeDataPanel(deferred=True)
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False,
+               verify_placed=False)
+        sent = list(panel.uploads)
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=False, verify_placed=False)
+
+        assert len(rep.reconciled) == len(small_tree)
+        assert panel.uploads == sent, "something was uploaded twice"
+        assert Manifest.load(mpath).in_state(INFLIGHT) == {}
+        assert panel.duplicates() == {}
+
+    def test_the_done_box_counts_everything_handed_over_as_added(
+            self, small_tree, src, tmp_path):
+        """'added 0' after sending 33 parts reads as if nothing happened."""
+        panel = FakeDataPanel(deferred=True)
+        _plan, rep = S.sync(src, str(tmp_path / "m.json"), panel,
+                            FakeTransport(small_tree), F3D, dry_run=False,
+                            verify_placed=False)
+        n = len(small_tree)
+        lines = rep.lines()
+        assert lines[0].split() == ["added", str(n)]
+        assert any(l.startswith("still uploading") and str(n) in l for l in lines)
+
+    def test_re_placed_counts_parts_still_uploading(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel()
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False)
+        for fid in panel.contents:
+            panel.contents[fid] = []                  # all deleted by hand
+        panel.deferred = True
+
+        _plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                            dry_run=False, verify_placed=True)
+
+        assert len(rep.replaced) == len(small_tree)
+
+
+class TestVerifyConfirmsEarlierUploadsFirst:
+    """Verify Integrity reads every folder anyway. Without this, parts Fusion
+    finished since the last sync show up as files Detent doesn't know."""
+
+    def waiting(self, small_tree, src, tmp_path):
+        panel = FakeDataPanel(deferred=True)
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D, dry_run=False,
+               verify_placed=False)
+        assert len(Manifest.load(mpath).in_state(INFLIGHT)) == len(small_tree)
+        return panel, mpath
+
+    def test_with_recheck_the_library_verifies_clean(self, small_tree, src, tmp_path):
+        panel, mpath = self.waiting(small_tree, src, tmp_path)
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=True, verify_placed=True, recheck=True)
+
+        assert plan.is_empty
+        assert rep.check.untracked == 0
+        assert Manifest.load(mpath).in_state(INFLIGHT) == {}
+
+    def test_a_plain_preview_still_changes_nothing(self, small_tree, src, tmp_path):
+        panel, mpath = self.waiting(small_tree, src, tmp_path)
+        before = open(mpath, encoding="utf-8").read()
+
+        plan, rep = S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+                           dry_run=True, verify_placed=False)
+
+        assert len(plan.inflight) == len(small_tree)
+        assert open(mpath, encoding="utf-8").read() == before
+
+    def test_the_addin_asks_for_it_only_when_verifying(self):
+        source = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "Detent.py"), encoding="utf-8").read()
+        assert "verify_placed=full, recheck=full," in source
 
 
 class TestConfirmWaitIsBounded:
@@ -1861,7 +1991,8 @@ class TestDownloadSize:
         text = open(os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "Detent.py"), encoding="utf-8").read()
-        assert "gh.estimate(n, preview.download_bytes)" in text
+        assert ("gh.estimate(n, preview.download_bytes, "
+                "preview.target_folders)") in text
 
 
 class TestOnlyRealFusionIdsAreRecorded:
@@ -2773,7 +2904,7 @@ class TestAddin:
 
     def test_still_uploading_is_explained_in_the_done_box(self):
         source = self.source()
-        assert "Still uploading in Fusion" in source
+        assert "Fusion is still uploading" in source
         assert "Nothing is uploaded twice" in source
 
     def test_every_run_is_timed(self):
