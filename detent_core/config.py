@@ -131,6 +131,6 @@ def default_config() -> Config:
             repo="VEX-CAD/VEX-CAD-Fusion-360-Library",
             ref="main",
             include=["**/*.f3d"],
-            folder_path="VEX CAD Library",
+            folder_path="VEX-CAD-Library",
         )
     ])

@@ -71,6 +71,12 @@ class TestConfig:
             {"id": "a", "label": "A", "repo": "x/y", "future_option": True}]}
         assert C.Config.from_dict(d).sources[0].id == "a"
 
+    def test_default_folder_is_vex_cad_library(self):
+        # The README tells everyone to use this folder. Keep them the same.
+        src = C.default_config().sources[0]
+        assert src.folder_path == "VEX-CAD-Library"
+        assert src.folders == ["VEX-CAD-Library"]
+
     def test_folder_path_splits(self):
         s = C.SourceConfig(id="a", label="A", repo="x/y", folder_path="/Libraries/VEX/")
         assert s.folders == ["Libraries", "VEX"]
