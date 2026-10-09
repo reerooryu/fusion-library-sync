@@ -83,6 +83,7 @@ One line per commit, oldest first.
 - `perf(sync): read only the folders a sync touches and stop waiting on uploads` — a full install took 49 min 42 s: 25 before sending, 3 sending, 22 waiting. After: 7 min 20 s.
 - `feat(ui): rename the check to Verify Integrity and describe each action in the dialog`
 - `perf(sync): don't wait for Fusion to confirm uploads` — a 19-second update took 2 minutes and confirmed nothing.
+- `docs(readme): explain Installed release and unverified parts for Adopt` — a full-size Adopt was run with the box empty, and `? 1198 unverified` never went away.
 
 ## Push
 

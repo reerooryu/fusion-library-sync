@@ -79,17 +79,34 @@ To try a small part first, see
 2. **Library**: VEX CAD Library
 3. **Project** and **Folder**: where your library already is
 4. **Action**: Adopt existing library
-5. **Installed release**: the version you have, e.g. `v2.0.5`. Leave it blank
-   if you don't know. This box appears once you pick Adopt.
-6. **OK**, check the number of files it matched, then **Yes**.
+5. **Installed release**: the release your library came from, e.g. `v2.0.5`.
+   This box appears once you pick Adopt. See below to find it.
+6. **OK**. Before you click Yes, check the box that comes up:
+   - The first line ends with your release, e.g. `at v2.0.5`. If it says
+     `at unknown`, the Installed release box was empty.
+   - `matched` is the same as `files in that release`. If it's much lower,
+     check the Folder.
+7. Click **Yes**.
 
 This uploads nothing. It only records what you already have. From now on, use
 **Sync now** when a new release comes out.
 
+**Finding your release.** It's in the name of the zip you downloaded:
+`VEX-CAD-Fusion-360-Library-2.0.5.zip` is `v2.0.5`. If you later added parts
+from a newer release, use the newest one.
+
+**If you leave it blank,** Adopt still works and Sync now still won't upload
+those parts again. But Detent can't tell which version of each part you have,
+so it marks them all `unverified`. Sync now, Preview and Verify Integrity
+then show a line like `? 1198 unverified` every time, and won't tell you when
+a new release changes one of those parts. Only running Adopt again with
+Installed release filled in clears it.
+
 > **Adopt first.** If you run Sync now on a folder that already has the
 > library, Detent won't upload files whose names are already there. It lists
 > them as `NAME TAKEN` instead. Fusion would otherwise let you have two files
-> with the same name without any warning.
+> with the same name without any warning. If this happened to you, run Adopt
+> now. It fixes it.
 
 ## Updating
 
