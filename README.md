@@ -138,21 +138,23 @@ your release typed in Installed release.
 
 From now on, run Sync now whenever a new release comes out.
 
-#### If Detent can't tell which release you have
+#### What Detent can't tell from names
 
-It tells every VEX CAD release so far apart by which parts are in your
-folder. Two cases need you:
+Detent works out your release from which parts are in your folder. Names
+can't show which version of a part you have, so two cases need you:
 
+- **A part changed in a past release.** For example, v2.0.6 changed
+  `LS Shaft` and `HS Shaft`. Detent assumes you have the older version and
+  lists those parts as `changed upstream`, and the Adopt box says how many.
+  If you installed that release in full, run step 2 again with the release
+  typed in Installed release.
 - **It can't find any release that matches.** The box says so, and your
-  parts are recorded as `unverified`.
-- **Two releases have the same parts, but some parts changed between
-  them.** Detent records just those parts as `unverified`, and the box
-  says how many.
+  parts are recorded as `unverified`. Sync now still adds new parts, but
+  shows a line like `? 12 unverified` every time. Run step 2 again with
+  your release typed in.
 
-Unverified parts are never uploaded again, and Sync now still adds new
-parts. But Sync now and Preview show a line like `? 12 unverified` every
-time, and Detent won't tell you if a later release changes those parts. To
-clear it, run step 2 again with your release typed in Installed release.
+If you added parts from a newer release by hand, that's fine. Adopt records
+them too, so Sync now won't try to add them again.
 
 ## Updating
 
@@ -225,8 +227,11 @@ a log). Neither holds any parts.
 
 - **It won't replace parts you already have.** If a release edits an existing
   part, Detent lists it under "Changed upstream" and leaves your copy alone.
-  Your robot designs link to your copy, and swapping it out can break the
-  joints in those designs. If you want the new version, replace it yourself.
+  Fusion can't swap in a new version of a part without breaking the joints
+  in designs that use it. If you want the new version, update your copy
+  yourself. When you're done, or if you decide to keep the old one, run
+  Adopt with the newest release typed in Installed release, and Detent stops
+  listing it.
 - **It won't delete.** Parts removed from the library stay in your project.
 - **Changing the Folder after a sync uploads a second full copy** into the new
   folder. Detent asks before doing this.
