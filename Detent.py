@@ -496,15 +496,13 @@ def _plan_text(plan, source, preview) -> str:
         lines.append(f"  ! {len(plan.inflight):5d}  not confirmed yet, Sync now checks them")
     if plan.change:
         # Detent can't update these, so list them for the user.
-        lines += ["", "Changed upstream - a newer version of these exists. "
-                      "Detent doesn't replace parts you have, because designs "
-                      "that use them could break. Once your copies are the new "
-                      "versions, or you've decided to keep the old ones, "
-                      "run Adopt with the newest release in Installed "
-                      "release to stop listing them:"]
+        lines += ["", "Changed upstream - a newer version exists. Detent "
+                      "doesn't replace parts you have. Sync now lists them "
+                      "once more, then stops:"]
         lines += [f"    {_short(p)}" for p in plan.change[:8]]
         if len(plan.change) > 8:
             lines.append(f"    ... and {len(plan.change) - 8} more")
+        lines += _update_steps()
 
     place = plan.to_place
     if place:
@@ -525,8 +523,24 @@ def _short(path: str, width: int = 58) -> str:
     return "..." + path[-(width - 3):]
 
 
+def _update_steps():
+    """How to get the new version of a part Detent won't replace."""
+    return ["  To update one: download it from the library's latest release. "
+            "In the Data Panel, right-click your copy, choose "
+            "Import New Change, and pick the new file. "
+            "Then click Get Latest in designs that use it.",
+            "  Or keep your copy. Nothing breaks."]
+
+
 def _report_text(report, manifest_path) -> str:
     lines = report.lines()
+    if report.skipped_changed:
+        lines += ["", "Changed upstream - not replaced. Detent won't list "
+                      "these again:"]
+        lines += [f"  {_short(p)}" for p in report.skipped_changed[:8]]
+        if len(report.skipped_changed) > 8:
+            lines.append(f"  ... and {len(report.skipped_changed) - 8} more")
+        lines += _update_steps()
     if report.collisions:
         lines += ["", "Blocked - two files would land in one place:"]
         lines += [f"  {k}: {', '.join(v)}" for k, v in list(report.collisions.items())[:5]]

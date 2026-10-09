@@ -2902,11 +2902,19 @@ class TestAddin:
         assert "type your release in Installed release" in body
         assert "Leave blank and Detent works it out" in source
 
-    def test_changed_upstream_says_how_to_clear_it(self):
+    def test_changed_upstream_says_how_to_update_a_part(self):
         source = self.source()
         assert "Phase 2" not in source
-        body = source[source.index("def _plan_text"):]
-        assert "run Adopt with the newest release" in body
+        preview = source[source.index("def _plan_text"):]
+        preview = preview[:preview.index("\ndef ")]
+        done = source[source.index("def _report_text"):]
+        done = done[:done.index("\ndef ")]
+        steps = source[source.index("def _update_steps"):]
+        steps = steps[:steps.index("\ndef ")]
+        assert "Import New Change" in steps and "Get Latest" in steps
+        for body in (preview, done):
+            assert "_update_steps()" in body
+        assert "report.skipped_changed" in done
         sync_src = open(os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "detent_core", "sync.py"),
             encoding="utf-8").read()
@@ -3199,6 +3207,41 @@ class TestAdoptEditedParts:
         plan, rep = S.sync(src, mpath, panel, self.transport(), F3D,
                            dry_run=False, settle_wait=0)
         assert sorted(rep.added + rep.pending) == sorted(self.NEW)
+        assert rep.skipped_changed == self.EDITED, "told about edited parts"
         assert panel.duplicates() == {}
         plan, _rep = S.sync(src, mpath, panel, self.transport(), F3D)
-        assert plan.add == [] and plan.change == self.EDITED
+        assert plan.add == [] and plan.change == [], "told once, then dropped"
+
+    def test_preview_keeps_listing_changed_parts_until_sync_now(
+            self, src, tmp_path):
+        panel = self.library(self.T5)
+        mpath = str(tmp_path / "m.json")
+        S.adopt_existing(src, mpath, panel, self.transport(), None, F3D,
+                         dry_run=False)
+        for _ in range(2):
+            plan, _rep = S.sync(src, mpath, panel, self.transport(), F3D)
+            assert plan.change == self.EDITED
+
+    def test_a_blocked_sync_keeps_listing_changed_parts(self, src, tmp_path):
+        panel = self.library(self.T5)
+        mpath = str(tmp_path / "m.json")
+        S.adopt_existing(src, mpath, panel, self.transport(), None, F3D,
+                         dry_run=False)
+        panel.refuse_folders = {("Motion", "New Shaft")}
+        _plan, rep = S.sync(src, mpath, panel, self.transport(), F3D,
+                            dry_run=False, settle_wait=0)
+        assert rep.stopped_early
+        panel.refuse_folders = set()
+        plan, _rep = S.sync(src, mpath, panel, self.transport(), F3D)
+        assert plan.change == self.EDITED
+
+    def test_dropping_a_changed_part_keeps_its_fusion_file(self, src, tmp_path):
+        panel = self.library(self.T5)
+        mpath = str(tmp_path / "m.json")
+        m, _st = S.adopt_existing(src, mpath, panel, self.transport(), None,
+                                  F3D, dry_run=False)
+        before = {p: m.files[p].lineage for p in self.EDITED}
+        S.sync(src, mpath, panel, self.transport(), F3D, dry_run=False,
+               settle_wait=0)
+        after = Manifest.load(mpath)
+        assert {p: after.files[p].lineage for p in self.EDITED} == before

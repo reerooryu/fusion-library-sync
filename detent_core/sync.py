@@ -667,6 +667,13 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     blocked = bool(report.collisions or report.unmappable
                    or report.stopped_early)
     if not dry_run and not blocked:
+        # Parts changed upstream are listed in this run's done box, then
+        # dropped from the list: Detent never replaces them, and repeating
+        # the list every run helps nobody. The user's file stays tracked.
+        for path in plan.change:
+            entry = manifest.files.get(path)
+            if entry is not None and path in selected:
+                entry.blob = selected[path]
         manifest.stamp(src.ref, commit)
         manifest.save(manifest_path)
 
