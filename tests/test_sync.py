@@ -2902,6 +2902,21 @@ class TestAddin:
         assert "type your release in Installed release" in body
         assert "Leave blank and Detent works it out" in source
 
+    def test_changed_upstream_says_how_to_clear_it(self):
+        source = self.source()
+        assert "Phase 2" not in source
+        body = source[source.index("def _plan_text"):]
+        assert "run Adopt with the newest release" in body
+        sync_src = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "detent_core", "sync.py"),
+            encoding="utf-8").read()
+        assert "Phase 2" not in sync_src
+
+    def test_adopt_box_explains_parts_assumed_older(self):
+        body = self.source()[self.source().index("def _do_adopt"):]
+        assert 'stats["assumed_older"]' in body
+        assert 'stats["newer"]' in body
+
     def test_installed_release_shows_only_for_adopt(self):
         source = self.source()
         assert "adopt_ref.isVisible = False" in source
@@ -2976,7 +2991,8 @@ class ReleasesTransport(FakeTransport):
             return [{"tag_name": t, "draft": False} for t in self.releases], {}
         if "/git/trees/" in url:
             ref = urllib.parse.unquote(url.split("/git/trees/")[1].split("?")[0])
-            tree = self.trees[ref]
+            # Sync reads the tree by commit; that's the current ref.
+            tree = self.trees.get(ref) or self.trees["main"]
             return ({"truncated": False,
                      "tree": [{"path": p, "type": "blob", "sha": s}
                               for p, s in tree.items()]}, {})
@@ -3041,32 +3057,32 @@ class TestAdoptWorksOutTheRelease:
         assert stats["matched"] == len(some)
         assert stats["missing"] == 30
 
-    def test_parts_only_edited_between_releases_stay_unverified(
+    def test_releases_with_the_same_names_assume_the_older_version(
             self, src, tmp_path):
-        """Two releases with the same part names can't be told apart. Parts
-        whose content differs between them get no blob; the rest do."""
+        """Two releases with the same part names can't be told apart. A part
+        whose content differs between them is recorded as the older version,
+        so it shows as changed upstream instead of looking current."""
         edited = sorted(self.T5)[:2]
         t6 = dict(self.T5)
         for p in edited:
             t6[p] = "edited-" + p
-        tr = ReleasesTransport({"v2.0.6": t6, "v2.0.5": self.T5},
+        tr = ReleasesTransport({"v2.0.6": t6, "v2.0.5": self.T5, "main": t6},
                                ["v2.0.6", "v2.0.5"])
+        mpath = str(tmp_path / "m.json")
 
-        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"),
-                                    self.library(self.T5), tr, None, F3D)
+        m, stats = S.adopt_existing(src, mpath, self.library(self.T5), tr,
+                                    None, F3D, dry_run=False)
 
         assert stats["release"] == "v2.0.6" and stats["tied"] == ["v2.0.5"]
-        assert stats["unverified"] == 2
-        assert all(m.files[p].blob is None for p in edited)
-        assert all(m.files[p].blob == self.T5[p]
-                   for p in self.T5 if p not in edited)
+        assert stats["assumed_older"] == 2
+        assert all(e.blob == self.T5[p] for p, e in m.files.items())
 
     def test_a_typed_release_is_used_as_is(self, src, tmp_path):
         tr = self.transport()
         m, stats = S.adopt_existing(src, str(tmp_path / "m.json"),
                                     self.library(self.T3), tr, "v2.0.5", F3D)
-        assert not any("/releases?" in u for u in tr.urls)
         assert stats["release"] == "v2.0.5" and not stats["detected"]
+        assert all(e.blob == self.T5[p] for p, e in m.files.items())
 
     def test_each_release_is_read_once_and_each_folder_once(self, src, tmp_path):
         panel = self.library(self.T3)
@@ -3074,7 +3090,7 @@ class TestAdoptWorksOutTheRelease:
         tr = self.transport()
         S.adopt_existing(src, str(tmp_path / "m.json"), panel, tr, None, F3D)
         trees = [u for u in tr.urls if "/git/trees/" in u]
-        assert len(trees) == 2
+        assert len(trees) == 3, "each release and the current ref, once each"
         assert len(panel.listings) == len(set(panel.listings))
 
     def test_an_empty_folder_works_out_nothing(self, src, tmp_path):
@@ -3092,3 +3108,97 @@ class TestAdoptWorksOutTheRelease:
         assert not stats["detected"]
         assert stats["matched"] == len(self.T5)
         assert all(e.blob is None for e in m.files.values())
+
+
+class TestAdoptEditedParts:
+    """A release can edit parts that already exist. Fusion can't swap a part
+    in place, so Detent never replaces it. What Adopt records decides whether
+    the user is told. Built on the real v2.0.5 tree: v2.0.6 here adds three
+    parts and edits two, like the real v2.0.6 (72 added, 2 edited)."""
+
+    T5 = PL.select(load_tree("v2.0.5"), F3D)
+    EDITED = sorted(T5)[:2]
+    NEW = ["Motion/New Shaft/A.f3d", "Motion/New Shaft/B.f3d",
+           "Motion/New Shaft/C.f3d"]
+
+    def t6(self):
+        t = dict(self.T5)
+        for p in self.EDITED:
+            t[p] = "v206-" + p
+        for p in self.NEW:
+            t[p] = "new-" + p
+        return t
+
+    def transport(self):
+        t6 = self.t6()
+        return ReleasesTransport({"v2.0.6": t6, "v2.0.5": self.T5, "main": t6},
+                                 ["v2.0.6", "v2.0.5"])
+
+    def library(self, paths):
+        from detent_core import paths as P
+        panel = FakeDataPanel()
+        for repo_path in sorted(paths):
+            pp = P.map_path(repo_path)
+            panel.upload(panel.ensure_folder(pp.folders), "/tmp/x", pp.name)
+        panel.uploads.clear()
+        return panel
+
+    def adopt_then_preview(self, paths, at_ref, tmp_path, src):
+        panel = self.library(paths)
+        mpath = str(tmp_path / "m.json")
+        m, stats = S.adopt_existing(src, mpath, panel, self.transport(), at_ref,
+                                    F3D, dry_run=False)
+        plan, _rep = S.sync(src, mpath, panel, self.transport(), F3D)
+        return m, stats, plan
+
+    def test_upgrade_from_the_older_release_adds_new_and_lists_edited(
+            self, src, tmp_path):
+        m, stats, plan = self.adopt_then_preview(self.T5, None, tmp_path, src)
+        assert stats["release"] == "v2.0.5"
+        assert plan.add == sorted(self.NEW)
+        assert plan.change == self.EDITED
+
+    def test_new_parts_added_by_hand_are_assumed_with_the_old_edited_parts(
+            self, src, tmp_path):
+        """Someone installed only the new parts of v2.0.6 by hand. The names
+        say v2.0.6, but their edited parts may be the old ones. Detent must
+        say so, not record them as current."""
+        m, stats, plan = self.adopt_then_preview(
+            set(self.T5) | set(self.NEW), None, tmp_path, src)
+        assert stats["release"] == "v2.0.6" and stats["detected"]
+        assert stats["assumed_older"] == 2
+        assert plan.add == []
+        assert plan.change == self.EDITED
+
+    def test_typing_the_release_trusts_it_and_clears_changed_upstream(
+            self, src, tmp_path):
+        """After replacing parts by hand, Adopt with the release typed in
+        records what's there as that release."""
+        m, stats, plan = self.adopt_then_preview(
+            set(self.T5) | set(self.NEW), "v2.0.6", tmp_path, src)
+        assert stats["assumed_older"] == 0
+        assert plan.add == [] and plan.change == []
+
+    def test_typing_an_older_release_still_records_newer_parts(
+            self, src, tmp_path):
+        """Typed v2.0.5 while the folder also has v2.0.6's new parts. They
+        used to be left out of the record, so every run listed them to add
+        and refused them as NAME TAKEN."""
+        m, stats, plan = self.adopt_then_preview(
+            set(self.T5) | set(self.NEW), "v2.0.5", tmp_path, src)
+        assert stats["newer"] == len(self.NEW)
+        assert all(p in m.files for p in self.NEW)
+        assert plan.add == []
+        assert plan.change == self.EDITED
+
+    def test_sync_after_adopt_never_duplicates_or_replaces(self, src, tmp_path):
+        panel = self.library(self.T5)
+        mpath = str(tmp_path / "m.json")
+        S.adopt_existing(src, mpath, panel, self.transport(), None, F3D,
+                         dry_run=False)
+        plan, rep = S.sync(src, mpath, panel, self.transport(), F3D,
+                           dry_run=False, settle_wait=0)
+        assert sorted(rep.added + rep.pending) == sorted(self.NEW)
+        assert panel.duplicates() == {}
+        plan, _rep = S.sync(src, mpath, panel, self.transport(), F3D)
+        assert plan.add == [] and plan.change == self.EDITED

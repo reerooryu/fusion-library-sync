@@ -443,27 +443,27 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
     text = f"Adopt {src.repo} at {release}\n"
     if stats["detected"]:
         text += "Worked out from the parts in your folder."
-        if stats["tied"] and stats["unverified"]:
+        if stats["tied"]:
             text += f" {', '.join(stats['tied'])} has the same part names."
-        elif stats["tied"]:
-            text += (f" {', '.join(stats['tied'])} has the same parts, so "
-                     "either is right.")
         text += "\n"
     text += (f"\n  files in that release   {stats['in_release']}\n"
              f"  files in those folders  {stats['in_panel']}\n"
              f"  matched                 {stats['matched']}\n"
-             f"  not found locally       {stats['missing']}\n\n"
-             "Adopting uploads nothing. It records what you already have so "
+             f"  not found locally       {stats['missing']}\n")
+    if stats["newer"]:
+        text += f"  from newer releases     {stats['newer']}\n"
+    text += ("\nAdopting uploads nothing. It records what you already have so "
              "the next sync moves only the difference.")
     if stats["detected"]:
         text += ("\n\nIf that release is wrong, click No and type your "
                  "release in Installed release.")
-        if stats["unverified"]:
-            text += (f"\n\n{stats['unverified']} part(s) changed between "
-                     "releases that have the same parts, so Detent can't "
-                     "tell which version you have. They're recorded as "
-                     "unverified.")
-    elif not at_ref:
+    if stats["assumed_older"]:
+        text += (f"\n\n{stats['assumed_older']} part(s) changed in past "
+                 "releases, and Detent can't tell which version you have. It "
+                 "assumes the older one, so they're listed as changed "
+                 f"upstream. If you installed {release} in full, click No and "
+                 f"type {release} in Installed release.")
+    if stats["release"] is None:
         text += ("\n\nDetent couldn't work out which release you have, so "
                  "parts are recorded as unverified. To fix that later, run "
                  "Adopt again and type your release in Installed release.")
@@ -483,7 +483,7 @@ def _plan_text(plan, source, preview) -> str:
     lines = [f"{source.repo} @ {source.ref}{at}", ""]
     lines.append(f"  + {len(plan.add):5d}  to add")
     if plan.change:
-        lines.append(f"  ~ {len(plan.change):5d}  changed upstream (Phase 2)")
+        lines.append(f"  ~ {len(plan.change):5d}  changed upstream (not replaced)")
     if plan.missing:
         lines.append(f"  * {len(plan.missing):5d}  MISSING from the Data Panel, will re-place")
     if plan.conflict:
@@ -496,8 +496,12 @@ def _plan_text(plan, source, preview) -> str:
         lines.append(f"  ! {len(plan.inflight):5d}  not confirmed yet, Sync now checks them")
     if plan.change:
         # Detent can't update these, so list them for the user.
-        lines += ["", "Changed upstream - Detent cannot update these. Replace "
-                      "them by hand if you want the new versions:"]
+        lines += ["", "Changed upstream - a newer version of these exists. "
+                      "Detent doesn't replace parts you have, because designs "
+                      "that use them could break. Once your copies are the new "
+                      "versions, or you've decided to keep the old ones, "
+                      "run Adopt with the newest release in Installed "
+                      "release to stop listing them:"]
         lines += [f"    {_short(p)}" for p in plan.change[:8]]
         if len(plan.change) > 8:
             lines.append(f"    ... and {len(plan.change) - 8} more")

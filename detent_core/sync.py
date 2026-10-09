@@ -93,7 +93,7 @@ class Report:
             # Everything handed to Fusion, confirmed or not.
             ("added", self.added + self.pending, ""),
             ("re-placed", self.replaced, "(were gone from the Data Panel)"),
-            ("changed upstream", self.skipped_changed, "(Phase 2)"),
+            ("changed upstream", self.skipped_changed, "(not replaced)"),
             ("gone upstream", self.skipped_orphan, "(cannot delete)"),
             ("unverified", self.unverified, ""),
             ("still uploading", self.pending,
@@ -690,12 +690,20 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
                    ) -> Tuple[Manifest, Dict[str, object]]:
     """Record a library the user already has. Uploads nothing.
 
-    at_ref is the release the user says they have. Without it, Detent works
-    it out: it compares the part names in the folders with each recent
-    release and picks the best match. Releases with the same part names
-    can't be told apart; parts whose content differs between them are
-    recorded without a blob (unverified). If nothing matches, every part is
-    recorded without a blob, matched against the current ref.
+    at_ref is the release the user says they have, and is trusted. Without
+    it, Detent works it out: it compares the part names in the folders with
+    each recent release and picks the best match.
+
+    Names can't show which version of a part someone has. So when Detent
+    works the release out, each part is recorded as its oldest version up to
+    that release. A part edited in a release then shows as changed upstream
+    instead of looking current. Typing the release clears that.
+
+    Every library part found is recorded, including parts from releases
+    newer than the one picked, so Sync now never tries to add them again.
+
+    If no release can be read or nothing matches, every part is recorded
+    without a blob (unverified), matched against the current ref.
 
     Reads each folder once.
     """
@@ -703,20 +711,27 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
         return PL.select(gh.fetch_tree(gh.Source(src.repo, ref, src.subpath),
                                        transport), include)
 
-    if at_ref is not None:
-        candidates = [(at_ref, tree_at(at_ref))]
-    else:
-        try:
-            tags = gh.list_releases(src, transport, MAX_RELEASES)
-        except gh.Cancelled:
-            raise
-        except gh.GitHubError:
-            tags = []
-        candidates = [(t, tree_at(t)) for t in tags]
+    try:
+        tags = gh.list_releases(src, transport, MAX_RELEASES)
+    except gh.Cancelled:
+        raise
+    except gh.GitHubError:
+        tags = []
+    releases = [(t, tree_at(t)) for t in tags]          # newest first
+    trees: Dict[str, Dict[str, str]] = dict(releases)
+    if at_ref is not None and at_ref not in trees:
+        trees[at_ref] = tree_at(at_ref)
+    current = tree_at(src.ref)
 
-    # repo path -> (folders, name) in Fusion, for every candidate.
+    # Oldest first: what a part looked like when it first appeared.
+    history = [trees[t] for t, _tree in reversed(releases)]
+    if at_ref is not None and at_ref not in dict(releases):
+        history.append(trees[at_ref])
+    history.append(current)
+
+    # repo path -> (folders, name) in Fusion, for every part of every tree.
     where: Dict[str, Tuple[Tuple[str, ...], str]] = {}
-    for _tag, tree in candidates:
+    for tree in list(trees.values()) + [current]:
         for repo_path in tree:
             if repo_path in where:
                 continue
@@ -729,27 +744,24 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
     # Read each folder once. Files still uploading have no real ID yet, so
     # they're skipped.
     present: Dict[Tuple[Tuple[str, ...], str], str] = {}
-    read: Set[Tuple[str, ...]] = set()
     in_panel = 0
+    folders_to_read = sorted({f for f, _n in where.values()})
+    for i, folders in enumerate(folders_to_read):
+        if on_progress and on_progress(
+                i, len(folders_to_read),
+                f"Reading folder {i + 1}/{len(folders_to_read)}") is False:
+            raise gh.Cancelled("cancelled while reading folders")
+        folder = panel.peek_folder(folders)
+        if folder is None:
+            continue
+        listing = panel.list_folder(folder)
+        in_panel += len(listing)
+        for f in listing:
+            if is_fusion_id(f.lineage):
+                present.setdefault((folders, f.name), f.lineage)
 
-    def read_folders(folder_list) -> None:
-        nonlocal in_panel
-        todo = sorted(set(folder_list) - read)
-        for i, folders in enumerate(todo):
-            if on_progress and on_progress(
-                    i, len(todo), f"Reading folder {i + 1}/{len(todo)}") is False:
-                raise gh.Cancelled("cancelled while reading folders")
-            read.add(folders)
-            folder = panel.peek_folder(folders)
-            if folder is None:
-                continue
-            listing = panel.list_folder(folder)
-            in_panel += len(listing)
-            for f in listing:
-                if is_fusion_id(f.lineage):
-                    present.setdefault((folders, f.name), f.lineage)
-
-    read_folders(f for f, _n in where.values())
+    def here(p: str) -> bool:
+        return p in where and where[p] in present
 
     def score(tree: Dict[str, str]) -> Tuple[int, int]:
         mine = {where[p] for p in tree if p in where}
@@ -760,59 +772,71 @@ def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
     release: Optional[str] = at_ref
     detected = False
     tied: List[str] = []
-    blobs: Dict[str, Optional[str]] = {}
-    chosen: Dict[str, str] = {}
-
-    if at_ref is not None:
-        chosen = candidates[0][1]
-        blobs = dict(chosen)
-    elif candidates:
-        scores = [score(tree) for _t, tree in candidates]
+    if at_ref is None and releases:
+        scores = [score(tree) for _t, tree in releases]
         best = max(scores)
         first = scores.index(best)
-        release, chosen = candidates[first]
-        hit = sum(1 for p in chosen if p in where and where[p] in present)
-        if hit:
-            detected = True
-            others = [tree for (t, tree), sc in zip(candidates, scores)
-                      if sc == best and t != release]
-            tied = [t for (t, _tree), sc in zip(candidates, scores)
+        if any(here(p) for p in releases[first][1]):
+            release, detected = releases[first][0], True
+            tied = [t for (t, _tree), sc in zip(releases, scores)
                     if sc == best and t != release]
-            for p, blob in chosen.items():
-                same = all(o.get(p) in (None, blob) for o in others)
-                blobs[p] = blob if same else None
-        else:
-            release, chosen = None, {}
 
-    if not detected and at_ref is None:
+    if release is None:
         # Nothing to compare with, or nothing matched: record what's there
         # against the current ref, without claiming which version it is.
-        chosen = tree_at(src.ref)
-        for repo_path in chosen:
-            if repo_path not in where:
-                try:
-                    pp = P.map_path(repo_path, src.subpath)
-                except P.PathError:
-                    continue
-                where[repo_path] = (tuple(pp.folders), pp.name)
-        read_folders(where[p][0] for p in chosen if p in where)
-        blobs = {p: None for p in chosen}
+        chosen = current
+        local = {p: present[where[p]] for p in chosen if here(p)}
+        blobs: Dict[str, Optional[str]] = {p: None for p in local}
+        stats: Dict[str, object] = {
+            "matched": len(local), "in_release": len(chosen),
+            "in_panel": in_panel, "missing": len(chosen) - len(local),
+            "release": None, "detected": False, "tied": [],
+            "unverified": len(local), "assumed_older": 0, "newer": 0,
+        }
+        manifest = adopt(src.repo.replace("/", "_"), src.repo, src.ref,
+                         blobs, local, release_known=True)
+        if not dry_run:
+            manifest.save(manifest_path)
+        return manifest, stats
+
+    chosen = trees[release]
+    if detected:
+        # Releases up to and including the one picked, oldest first.
+        upto = [tree for t, tree in reversed(releases)]
+        upto = upto[:len(releases) - [t for t, _x in releases].index(release)]
+    else:
+        upto = [chosen]
+
+    def oldest(p: str, among) -> Optional[str]:
+        for tree in among:
+            if p in tree:
+                return tree[p]
+        return None
 
     local: Dict[str, str] = {}
-    for repo_path in chosen:
-        spot = where.get(repo_path)
-        if spot is not None and spot in present:
-            local[repo_path] = present[spot]
+    blobs = {}
+    taken: Set[Tuple[Tuple[str, ...], str]] = set()
+    # The picked release first, then any other part of the library.
+    others = sorted({p for tree in history for p in tree} - set(chosen))
+    for p in list(chosen) + others:
+        if not here(p) or where[p] in taken:
+            continue
+        taken.add(where[p])
+        local[p] = present[where[p]]
+        blobs[p] = oldest(p, upto) if p in chosen else oldest(p, history)
 
-    stats: Dict[str, object] = {
+    stats = {
         "matched": len(local),
         "in_release": len(chosen),
         "in_panel": in_panel,
-        "missing": len(chosen) - len(local),
+        "missing": sum(1 for p in chosen if p not in local),
         "release": release,
         "detected": detected,
         "tied": tied,
         "unverified": sum(1 for p in local if blobs.get(p) is None),
+        "assumed_older": sum(1 for p in local
+                             if p in chosen and blobs[p] != chosen[p]),
+        "newer": sum(1 for p in local if p not in chosen),
     }
 
     manifest = adopt(src.repo.replace("/", "_"), src.repo, src.ref,
