@@ -160,6 +160,24 @@ def resolve_commit(src: Source, transport: Transport) -> str:
     return sha
 
 
+def list_releases(src: Source, transport: Transport,
+                  limit: int = 20) -> List[str]:
+    """Release tags, newest first, without drafts. Falls back to plain tags
+    for a repo that tags without making releases. Empty if it has neither."""
+    n = max(1, min(limit, 100))
+    payload, _ = transport.get_json(
+        f"{API}/repos/{src.repo}/releases?per_page={n}")
+    tags = [r["tag_name"] for r in payload if isinstance(r, dict)
+            and r.get("tag_name") and not r.get("draft")] \
+        if isinstance(payload, list) else []
+    if not tags:
+        payload, _ = transport.get_json(
+            f"{API}/repos/{src.repo}/tags?per_page={n}")
+        tags = [t["name"] for t in payload if isinstance(t, dict)
+                and t.get("name")] if isinstance(payload, list) else []
+    return tags[:limit]
+
+
 def fetch_tree(src: Source, transport: Transport,
                commit: Optional[str] = None) -> Tree:
     """Every file path and blob SHA in the repo, in one request."""

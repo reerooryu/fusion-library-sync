@@ -677,58 +677,146 @@ def sync(src: gh.Source, manifest_path: str, panel: DataPanel,
     return plan, report
 
 
+# How many recent releases Adopt compares against when it works out which
+# one the user has. One GitHub request each.
+MAX_RELEASES = 20
+
+
 def adopt_existing(src: gh.Source, manifest_path: str, panel: DataPanel,
                    transport: gh.Transport, at_ref: Optional[str],
                    include: Sequence[str] = ("**/*.f3d",),
                    dry_run: bool = True,
                    on_progress: Optional[Progress] = None
-                   ) -> Tuple[Manifest, Dict[str, int]]:
+                   ) -> Tuple[Manifest, Dict[str, object]]:
     """Record a library the user already has. Uploads nothing.
 
-    With at_ref=None, files are recorded without a blob (unverified).
+    at_ref is the release the user says they have. Without it, Detent works
+    it out: it compares the part names in the folders with each recent
+    release and picks the best match. Releases with the same part names
+    can't be told apart; parts whose content differs between them are
+    recorded without a blob (unverified). If nothing matches, every part is
+    recorded without a blob, matched against the current ref.
 
-    Reads only the folders the release has files in, once each.
+    Reads each folder once.
     """
-    release_known = at_ref is not None
-    # Without a release, match against the current ref.
-    match_ref = at_ref or src.ref
-    tree = gh.fetch_tree(gh.Source(src.repo, match_ref, src.subpath), transport)
-    tree = PL.select(tree, include)
+    def tree_at(ref: str) -> Dict[str, str]:
+        return PL.select(gh.fetch_tree(gh.Source(src.repo, ref, src.subpath),
+                                       transport), include)
 
-    wanted: Dict[Tuple[str, ...], List[Tuple[str, str]]] = {}
-    for repo_path in tree:
+    if at_ref is not None:
+        candidates = [(at_ref, tree_at(at_ref))]
+    else:
         try:
-            pp = P.map_path(repo_path, src.subpath)
-        except P.PathError:
-            continue
-        wanted.setdefault(pp.folders, []).append((repo_path, pp.name))
+            tags = gh.list_releases(src, transport, MAX_RELEASES)
+        except gh.Cancelled:
+            raise
+        except gh.GitHubError:
+            tags = []
+        candidates = [(t, tree_at(t)) for t in tags]
+
+    # repo path -> (folders, name) in Fusion, for every candidate.
+    where: Dict[str, Tuple[Tuple[str, ...], str]] = {}
+    for _tag, tree in candidates:
+        for repo_path in tree:
+            if repo_path in where:
+                continue
+            try:
+                pp = P.map_path(repo_path, src.subpath)
+            except P.PathError:
+                continue
+            where[repo_path] = (tuple(pp.folders), pp.name)
+
+    # Read each folder once. Files still uploading have no real ID yet, so
+    # they're skipped.
+    present: Dict[Tuple[Tuple[str, ...], str], str] = {}
+    read: Set[Tuple[str, ...]] = set()
+    in_panel = 0
+
+    def read_folders(folder_list) -> None:
+        nonlocal in_panel
+        todo = sorted(set(folder_list) - read)
+        for i, folders in enumerate(todo):
+            if on_progress and on_progress(
+                    i, len(todo), f"Reading folder {i + 1}/{len(todo)}") is False:
+                raise gh.Cancelled("cancelled while reading folders")
+            read.add(folders)
+            folder = panel.peek_folder(folders)
+            if folder is None:
+                continue
+            listing = panel.list_folder(folder)
+            in_panel += len(listing)
+            for f in listing:
+                if is_fusion_id(f.lineage):
+                    present.setdefault((folders, f.name), f.lineage)
+
+    read_folders(f for f, _n in where.values())
+
+    def score(tree: Dict[str, str]) -> Tuple[int, int]:
+        mine = {where[p] for p in tree if p in where}
+        hit = sum(1 for spot in mine if spot in present)
+        extra = sum(1 for spot in present if spot not in mine)
+        return (hit - extra, -(len(tree) - hit))
+
+    release: Optional[str] = at_ref
+    detected = False
+    tied: List[str] = []
+    blobs: Dict[str, Optional[str]] = {}
+    chosen: Dict[str, str] = {}
+
+    if at_ref is not None:
+        chosen = candidates[0][1]
+        blobs = dict(chosen)
+    elif candidates:
+        scores = [score(tree) for _t, tree in candidates]
+        best = max(scores)
+        first = scores.index(best)
+        release, chosen = candidates[first]
+        hit = sum(1 for p in chosen if p in where and where[p] in present)
+        if hit:
+            detected = True
+            others = [tree for (t, tree), sc in zip(candidates, scores)
+                      if sc == best and t != release]
+            tied = [t for (t, _tree), sc in zip(candidates, scores)
+                    if sc == best and t != release]
+            for p, blob in chosen.items():
+                same = all(o.get(p) in (None, blob) for o in others)
+                blobs[p] = blob if same else None
+        else:
+            release, chosen = None, {}
+
+    if not detected and at_ref is None:
+        # Nothing to compare with, or nothing matched: record what's there
+        # against the current ref, without claiming which version it is.
+        chosen = tree_at(src.ref)
+        for repo_path in chosen:
+            if repo_path not in where:
+                try:
+                    pp = P.map_path(repo_path, src.subpath)
+                except P.PathError:
+                    continue
+                where[repo_path] = (tuple(pp.folders), pp.name)
+        read_folders(where[p][0] for p in chosen if p in where)
+        blobs = {p: None for p in chosen}
 
     local: Dict[str, str] = {}
-    in_panel = 0
-    for i, folders in enumerate(sorted(wanted)):
-        if on_progress and on_progress(
-                i, len(wanted), f"Reading folder {i + 1}/{len(wanted)}") is False:
-            raise gh.Cancelled("cancelled while reading folders")
-        folder = panel.peek_folder(folders)
-        if folder is None:
-            continue
-        listing = panel.list_folder(folder)
-        in_panel += len(listing)
-        # Files still uploading have no real ID yet, so they're skipped.
-        by_name = {f.name: f.lineage for f in listing if is_fusion_id(f.lineage)}
-        for repo_path, name in wanted[folders]:
-            if name in by_name:
-                local[repo_path] = by_name[name]
+    for repo_path in chosen:
+        spot = where.get(repo_path)
+        if spot is not None and spot in present:
+            local[repo_path] = present[spot]
 
-    stats = {
+    stats: Dict[str, object] = {
         "matched": len(local),
-        "in_release": len(tree),
+        "in_release": len(chosen),
         "in_panel": in_panel,
+        "missing": len(chosen) - len(local),
+        "release": release,
+        "detected": detected,
+        "tied": tied,
+        "unverified": sum(1 for p in local if blobs.get(p) is None),
     }
-    stats["missing"] = stats["in_release"] - stats["matched"]
 
     manifest = adopt(src.repo.replace("/", "_"), src.repo, src.ref,
-                     tree, local, release_known=release_known)
+                     blobs, local, release_known=True)
     if not dry_run:
         manifest.save(manifest_path)
     return manifest, stats

@@ -87,6 +87,7 @@ One line per commit, oldest first.
 - `feat(config): default folder is VEX-CAD-Library` — one folder name for everyone, to go with the fresh-copy advice.
 - `docs(readme): recommend a fresh copy in VEX-CAD-Library over Adopt` — Adopt needs the release number, which people don't know.
 - `docs(readme): rename an existing library to VEX-CAD-Library and adopt it` — a fresh copy leaves old designs linked to the old folder; renaming keeps one library.
+- `feat(adopt): work out the installed release from the parts in the folder` — people don't know their release. Every release v2.0.0–v2.0.5 is told apart by part names; same-name releases leave only the edited parts unverified.
 
 ## Push
 

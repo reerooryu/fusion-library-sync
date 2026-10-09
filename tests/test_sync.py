@@ -42,6 +42,8 @@ class FakeTransport:
         self.json_calls += 1
         if "/commits/" in url:
             return {"sha": self.commit}, {}
+        if "/releases?" in url or "/tags?" in url:
+            return [], {}
         return ({"truncated": False,
                  "tree": [{"path": p, "type": "blob", "sha": s}
                           for p, s in self.tree.items()]}, {})
@@ -2892,6 +2894,14 @@ class TestAddin:
         assert 'inputs.itemById("about").text = A.ABOUT.get(picked, "")' in source
         assert 'A.ABOUT[A.ORDER[0]]' in source, "the default action needs its text too"
 
+    def test_adopt_says_when_it_worked_out_the_release(self):
+        source = self.source()
+        body = source[source.index("def _do_adopt"):]
+        assert 'stats["detected"]' in body
+        assert "Worked out from the parts in your folder" in body
+        assert "type your release in Installed release" in body
+        assert "Leave blank and Detent works it out" in source
+
     def test_installed_release_shows_only_for_adopt(self):
         source = self.source()
         assert "adopt_ref.isVisible = False" in source
@@ -2946,3 +2956,139 @@ class TestActions:
         for name in A.ORDER:
             assert f"| **{name}** |" in table, f"{name} is missing from the table"
         assert "Check library" not in readme
+
+
+class ReleasesTransport(FakeTransport):
+    """Serves several releases, each with its own tree."""
+
+    def __init__(self, trees, releases, fail_releases=False):
+        super().__init__(trees[releases[0]])
+        self.trees = trees
+        self.releases = releases
+        self.fail_releases = fail_releases
+        self.urls = []
+
+    def get_json(self, url):
+        self.urls.append(url)
+        if "/releases?" in url:
+            if self.fail_releases:
+                raise gh.GitHubError("simulated: GitHub unavailable")
+            return [{"tag_name": t, "draft": False} for t in self.releases], {}
+        if "/git/trees/" in url:
+            ref = urllib.parse.unquote(url.split("/git/trees/")[1].split("?")[0])
+            tree = self.trees[ref]
+            return ({"truncated": False,
+                     "tree": [{"path": p, "type": "blob", "sha": s}
+                              for p, s in tree.items()]}, {})
+        return super().get_json(url)
+
+
+class TestAdoptWorksOutTheRelease:
+    """With Installed release blank, Adopt finds the release whose parts match
+    the folder. People don't know which release they downloaded."""
+
+    T3 = PL.select(load_tree("v2.0.3"), F3D)
+    T5 = PL.select(load_tree("v2.0.5"), F3D)
+
+    def library(self, tree):
+        from detent_core import paths as P
+        panel = FakeDataPanel()
+        for repo_path in tree:
+            pp = P.map_path(repo_path)
+            panel.upload(panel.ensure_folder(pp.folders), "/tmp/x", pp.name)
+        panel.uploads.clear()
+        return panel
+
+    def transport(self, **kw):
+        return ReleasesTransport({"v2.0.5": self.T5, "v2.0.3": self.T3,
+                                  "main": self.T5},
+                                 ["v2.0.5", "v2.0.3"], **kw)
+
+    def test_finds_an_older_release_and_sync_adds_only_the_newer_parts(
+            self, src, tmp_path):
+        panel = self.library(self.T3)
+        tr = self.transport()
+        mpath = str(tmp_path / "m.json")
+
+        m, stats = S.adopt_existing(src, mpath, panel, tr, None, F3D,
+                                    dry_run=False)
+
+        assert stats["release"] == "v2.0.3" and stats["detected"]
+        assert stats["matched"] == len(self.T3)
+        assert stats["unverified"] == 0
+        assert all(e.blob == self.T3[p] for p, e in m.files.items())
+
+        tr5 = FakeTransport(self.T5)
+        plan, _rep = S.sync(src, mpath, panel, tr5, F3D, dry_run=True)
+        assert plan.add == sorted(set(self.T5) - set(self.T3))
+        assert plan.unverified == [] and plan.change == []
+
+    def test_finds_the_latest_release(self, src, tmp_path):
+        panel = self.library(self.T5)
+        mpath = str(tmp_path / "m.json")
+        m, stats = S.adopt_existing(src, mpath, panel, self.transport(), None,
+                                    F3D, dry_run=False)
+        assert stats["release"] == "v2.0.5"
+        plan, _rep = S.sync(src, mpath, panel, FakeTransport(self.T5), F3D)
+        assert plan.is_empty
+
+    def test_a_few_missing_parts_dont_change_the_answer(self, src, tmp_path):
+        some = dict(list(self.T3.items())[30:])
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"),
+                                    self.library(some), self.transport(), None,
+                                    F3D)
+        assert stats["release"] == "v2.0.3"
+        assert stats["matched"] == len(some)
+        assert stats["missing"] == 30
+
+    def test_parts_only_edited_between_releases_stay_unverified(
+            self, src, tmp_path):
+        """Two releases with the same part names can't be told apart. Parts
+        whose content differs between them get no blob; the rest do."""
+        edited = sorted(self.T5)[:2]
+        t6 = dict(self.T5)
+        for p in edited:
+            t6[p] = "edited-" + p
+        tr = ReleasesTransport({"v2.0.6": t6, "v2.0.5": self.T5},
+                               ["v2.0.6", "v2.0.5"])
+
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"),
+                                    self.library(self.T5), tr, None, F3D)
+
+        assert stats["release"] == "v2.0.6" and stats["tied"] == ["v2.0.5"]
+        assert stats["unverified"] == 2
+        assert all(m.files[p].blob is None for p in edited)
+        assert all(m.files[p].blob == self.T5[p]
+                   for p in self.T5 if p not in edited)
+
+    def test_a_typed_release_is_used_as_is(self, src, tmp_path):
+        tr = self.transport()
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"),
+                                    self.library(self.T3), tr, "v2.0.5", F3D)
+        assert not any("/releases?" in u for u in tr.urls)
+        assert stats["release"] == "v2.0.5" and not stats["detected"]
+
+    def test_each_release_is_read_once_and_each_folder_once(self, src, tmp_path):
+        panel = self.library(self.T3)
+        panel.listings = []
+        tr = self.transport()
+        S.adopt_existing(src, str(tmp_path / "m.json"), panel, tr, None, F3D)
+        trees = [u for u in tr.urls if "/git/trees/" in u]
+        assert len(trees) == 2
+        assert len(panel.listings) == len(set(panel.listings))
+
+    def test_an_empty_folder_works_out_nothing(self, src, tmp_path):
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"),
+                                    FakeDataPanel(), self.transport(), None, F3D)
+        assert not stats["detected"] and stats["release"] is None
+        assert stats["matched"] == 0
+
+    def test_if_github_wont_list_releases_parts_are_still_adopted(
+            self, src, tmp_path):
+        tr = ReleasesTransport({"v2.0.5": self.T5, "main": self.T5},
+                               ["v2.0.5"], fail_releases=True)
+        m, stats = S.adopt_existing(src, str(tmp_path / "m.json"),
+                                    self.library(self.T5), tr, None, F3D)
+        assert not stats["detected"]
+        assert stats["matched"] == len(self.T5)
+        assert all(e.blob is None for e in m.files.values())

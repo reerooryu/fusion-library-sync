@@ -169,9 +169,8 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             adopt_ref = inputs.addStringValueInput(
                 "adopt_ref", "Installed release", "")
             adopt_ref.tooltip = (
-                "For Adopt: the release tag your existing library came from, "
-                "e.g. v2.0.3. Leave blank if you do not know - files are then "
-                "marked unverified rather than assumed current.")
+                "For Adopt: the release your library came from, e.g. v2.0.5. "
+                "Leave blank and Detent works it out from the parts you have.")
             # Only Adopt uses it.
             adopt_ref.isVisible = False
 
@@ -423,7 +422,7 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
 
     progress = ui.createProgressDialog()
     progress.isCancelButtonShown = True
-    progress.show("Detent", "Reading the library on GitHub...", 0, 1)
+    progress.show("Detent", "Reading the releases on GitHub...", 0, 1)
     adsk.doEvents()
     started = time.time()
     try:
@@ -435,20 +434,39 @@ def _do_adopt(ui, src, manifest_path, panel, transport, source, at_ref):
         return
     finally:
         _done(progress)
+    release = stats["release"] or "unknown"
+    how = " (worked out)" if stats["detected"] else ""
     _log_timing("Adopt", source, {"read": time.time() - started},
-                f"matched {stats['matched']} of {stats['in_release']}")
+                f"matched {stats['matched']} of {stats['in_release']} "
+                f"at {release}{how}")
 
-    known = at_ref or "unknown"
-    text = (f"Adopt {src.repo} at {known}\n\n"
-            f"  files in that release   {stats['in_release']}\n"
-            f"  files in those folders  {stats['in_panel']}\n"
-            f"  matched                 {stats['matched']}\n"
-            f"  not found locally       {stats['missing']}\n\n"
-            "Adopting uploads nothing. It records what you already have so "
-            "the next sync moves only the difference.")
-    if not at_ref:
-        text += ("\n\nNo release given: files are recorded as unverified "
-                 "rather than assumed current.")
+    text = f"Adopt {src.repo} at {release}\n"
+    if stats["detected"]:
+        text += "Worked out from the parts in your folder."
+        if stats["tied"] and stats["unverified"]:
+            text += f" {', '.join(stats['tied'])} has the same part names."
+        elif stats["tied"]:
+            text += (f" {', '.join(stats['tied'])} has the same parts, so "
+                     "either is right.")
+        text += "\n"
+    text += (f"\n  files in that release   {stats['in_release']}\n"
+             f"  files in those folders  {stats['in_panel']}\n"
+             f"  matched                 {stats['matched']}\n"
+             f"  not found locally       {stats['missing']}\n\n"
+             "Adopting uploads nothing. It records what you already have so "
+             "the next sync moves only the difference.")
+    if stats["detected"]:
+        text += ("\n\nIf that release is wrong, click No and type your "
+                 "release in Installed release.")
+        if stats["unverified"]:
+            text += (f"\n\n{stats['unverified']} part(s) changed between "
+                     "releases that have the same parts, so Detent can't "
+                     "tell which version you have. They're recorded as "
+                     "unverified.")
+    elif not at_ref:
+        text += ("\n\nDetent couldn't work out which release you have, so "
+                 "parts are recorded as unverified. To fix that later, run "
+                 "Adopt again and type your release in Installed release.")
 
     answer = ui.messageBox(text + "\n\nWrite the manifest?", "Detent",
                            adsk.core.MessageBoxButtonTypes.YesNoButtonType)
