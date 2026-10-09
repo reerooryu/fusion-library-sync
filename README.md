@@ -53,16 +53,20 @@ Detent is now at **Utilities → ADD-INS → Sync Library**.
 
 ## First sync
 
-### Recommended: a fresh copy in `VEX-CAD-Library`
+Pick the one that fits you:
 
-Do this even if you already have the library. You don't need to know which
-release you have, and Detent tracks every part from the start.
+- **You don't have the VEX CAD library in Fusion yet.** Follow
+  [Install the library](#install-the-library).
+- **You already have it in Fusion.** Don't download it again. Follow
+  [Use the library you have](#use-the-library-you-have).
+
+### Install the library
 
 1. Open **Sync Library**.
 2. **Library**: VEX CAD Library
 3. **Project**: the project you want it in
-4. **Folder**: `VEX-CAD-Library`. New installs fill this in for you.
-   Detent makes the folder.
+4. **Folder**: `VEX-CAD-Library`. It's already filled in. Detent makes the
+   folder.
 5. **Action**: Sync now → **OK**
 6. Check the list it shows you, then click **Yes**.
 
@@ -72,50 +76,80 @@ then uploads the parts in the background, so the done box says most of them
 are `still uploading`. **Keep Fusion open until its uploads finish.** The
 next time you run Sync now, Detent confirms them. Nothing is uploaded twice.
 
-**Already have an old copy?** Keep it. Designs that use its parts still
-point to those files, and deleting it breaks them. Use `VEX-CAD-Library` for
-new designs. Once nothing uses the old folder, you can delete it.
-
 To try a small part first, see
 [Sync part of the library](#sync-part-of-the-library).
 
-### Or: keep using the copy you have
+### Use the library you have
 
-Only if you need new parts to land in the folder you already use. Otherwise,
-use the fresh copy above.
+You rename your library folder to `VEX-CAD-Library`, tell Detent which
+release it is, and then Detent adds whatever is newer. Your designs keep
+working the whole time.
+
+> **Do these steps in order.** If you run Sync now on your library before
+> step 3, Detent sees parts it didn't put there. It won't upload copies of
+> them, so nothing is duplicated, but it will list them as `NAME TAKEN`
+> until you do step 3.
+
+**Step 1. Find your release.**
+
+Look at your library folder's name in Fusion's Data Panel. If you never
+renamed it, it ends with the release:
+`VEX-CAD-Fusion-360-Library-2.0.5` is release `v2.0.5`. The zip you
+downloaded has the same name. Write the release down now, because the next
+step changes the folder's name.
+
+Can't find it? Carry on and see
+[If you don't know your release](#if-you-dont-know-your-release) at step 3.
+
+**Step 2. Rename the folder to `VEX-CAD-Library`.**
+
+In the Data Panel, right-click your library folder, choose **Rename**, and
+type `VEX-CAD-Library`. Inside it you should see the library's own folders:
+Electronics, Field Elements, Hardware, Motion and Structure.
+
+Renaming doesn't break your designs. They're linked to the parts
+themselves, not to the folder's name. To be sure, open one of your designs
+afterwards and check that it loads normally.
+
+If those five folders sit straight in your project with no folder around
+them, make a new folder called `VEX-CAD-Library` and move the five folders
+into it.
+
+**Step 3. Adopt.**
 
 1. Open **Sync Library**.
 2. **Library**: VEX CAD Library
-3. **Project** and **Folder**: where your library already is
-4. **Action**: Adopt existing library
-5. **Installed release**: the release your library came from, e.g. `v2.0.5`.
-   This box appears once you pick Adopt. See below to find it.
-6. **OK**. Before you click Yes, check the box that comes up:
-   - The first line ends with your release, e.g. `at v2.0.5`. If it says
-     `at unknown`, the Installed release box was empty.
-   - `matched` is the same as `files in that release`. If it's much lower,
-     check the Folder.
-7. Click **Yes**.
+3. **Project**: the project your library is in
+4. **Folder**: `VEX-CAD-Library`
+5. **Action**: Adopt existing library
+6. **Installed release**: the release from step 1, for example `v2.0.5`.
+   This box appears once you pick Adopt.
+7. Click **OK**. Detent reads your folders, which takes a few minutes, then
+   shows a box. Check two things in it:
+   - The first line ends with your release, for example `at v2.0.5`. If it
+     says `at unknown`, the Installed release box was empty.
+   - `matched` is close to `files in that release`. If it's much lower,
+     check that the Folder is right.
+8. Click **Yes**. This uploads nothing. It only records what you have.
 
-This uploads nothing. It only records what you already have. From now on, use
-**Sync now** when a new release comes out.
+**Step 4. Get what's new.**
 
-**Finding your release.** It's in the name of the zip you downloaded:
-`VEX-CAD-Fusion-360-Library-2.0.5.zip` is `v2.0.5`. If you later added parts
-from a newer release, use the newest one.
+1. Open **Sync Library**.
+2. **Action**: Sync now → **OK**
+3. It lists the parts released after yours. Click **Yes**.
 
-**If you leave it blank,** Adopt still works and Sync now still won't upload
-those parts again. But Detent can't tell which version of each part you have,
-so it marks them all `unverified`. Sync now, Preview and Verify Integrity
-then show a line like `? 1198 unverified` every time, and won't tell you when
-a new release changes one of those parts. Only running Adopt again with
-Installed release filled in clears it.
+From now on, run Sync now whenever a new release comes out.
 
-> **Adopt first.** If you run Sync now on a folder that already has the
-> library, Detent won't upload files whose names are already there. It lists
-> them as `NAME TAKEN` instead. Fusion would otherwise let you have two files
-> with the same name without any warning. If this happened to you, run Adopt
-> now. It fixes it.
+#### If you don't know your release
+
+Leave Installed release blank in step 3. Adopt still works, and Sync now
+still adds new parts without uploading the ones you have.
+
+What you lose: Detent can't tell which version of each of your parts you
+have, so it marks them `unverified`. Sync now and Preview show a line like
+`? 1198 unverified` every time, and if a later release changes one of those
+parts, Detent won't tell you. To clear it, run step 3 again with the release
+filled in.
 
 ## Updating
 

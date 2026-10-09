@@ -86,6 +86,7 @@ One line per commit, oldest first.
 - `docs(readme): explain Installed release and unverified parts for Adopt` — a full-size Adopt was run with the box empty, and `? 1198 unverified` never went away.
 - `feat(config): default folder is VEX-CAD-Library` — one folder name for everyone, to go with the fresh-copy advice.
 - `docs(readme): recommend a fresh copy in VEX-CAD-Library over Adopt` — Adopt needs the release number, which people don't know.
+- `docs(readme): rename an existing library to VEX-CAD-Library and adopt it` — a fresh copy leaves old designs linked to the old folder; renaming keeps one library.
 
 ## Push
 

@@ -4,9 +4,9 @@ Use the latest release. Older releases are kept for reference and marked broken.
 
 ## v0.4.2 — Much less waiting, a library check, and a tracking fix
 
-- New installs put the library in a folder called `VEX-CAD-Library`. The
-  README now recommends a fresh copy there, even if you already have the
-  library, so you don't need to know which release you have.
+- New installs put the library in a folder called `VEX-CAD-Library`. If you
+  already have the library, the README shows how to rename your folder to
+  that and adopt it, step by step.
 - Fixed: files that were still uploading could be recorded under a temporary
   local path instead of their Fusion ID. The next Preview then listed them as
   "missing but the name is taken". Detent now waits for the real ID. Records
