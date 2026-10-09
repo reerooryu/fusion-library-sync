@@ -7,9 +7,14 @@ Use the latest release. Older releases are kept for reference and marked broken.
 - New installs put the library in a folder called `VEX-CAD-Library`. If you
   already have the library, the README shows how to rename your folder to
   that and adopt it, step by step.
+- Adopt works out which release you have from the parts in your folder.
+  Leave Installed release blank. It tells every VEX CAD release so far
+  apart. Parts that changed between two releases with the same part names
+  are recorded as unverified, and the box says how many.
 - Fixed: files that were still uploading could be recorded under a temporary
   local path instead of their Fusion ID. The next Preview then listed them as
-  "missing but the name is taken". Detent now waits for the real ID. Records
+  "missing but the name is taken". Detent now records only real Fusion IDs,
+  and confirms parts still uploading on the next Sync now. Records
   made by older versions are repaired on the next Sync, without uploading
   anything.
 - Downloads files 16 at a time instead of as one archive. On a home
@@ -32,8 +37,7 @@ Use the latest release. Older releases are kept for reference and marked broken.
   and handing parts to Fusion. It used to guess 2 seconds a part.
 - Asks Fusion for far less: each folder is read once, and folders Detent has
   just made aren't read at all.
-- Adopt reads only the folders the release uses. It shows progress and can be
-  cancelled.
+- Adopt reads each folder once. It shows progress and can be cancelled.
 - Preview no longer creates the library folder.
 - Every box says how long the run took. `state/timing.log` keeps a line per
   run with the time for each part.

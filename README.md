@@ -71,7 +71,8 @@ Pick the one that fits you:
 6. Check the list it shows you, then click **Yes**.
 
 The whole library is about 1,200 files and 2 GB. Detent downloads it and
-hands every part to Fusion, which took about 5 minutes in our test. Fusion
+hands every part to Fusion. In our tests that took about 5 minutes on a Mac
+and 11 minutes on a Windows laptop, on home connections. Fusion
 then uploads the parts in the background, so the done box says most of them
 are `still uploading`. **Keep Fusion open until its uploads finish.** The
 next time you run Sync now, Detent confirms them. Nothing is uploaded twice.
@@ -81,31 +82,24 @@ To try a small part first, see
 
 ### Use the library you have
 
-You rename your library folder to `VEX-CAD-Library`, tell Detent which
-release it is, and then Detent adds whatever is newer. Your designs keep
-working the whole time.
+You rename your library folder to `VEX-CAD-Library` and adopt it. Detent
+works out which release you have, then adds whatever is newer. Your designs
+keep working the whole time.
 
 > **Do these steps in order.** If you run Sync now on your library before
-> step 3, Detent sees parts it didn't put there. It won't upload copies of
+> step 2, Detent sees parts it didn't put there. It won't upload copies of
 > them, so nothing is duplicated, but it will list them as `NAME TAKEN`
-> until you do step 3.
+> until you do step 2.
 
-**Step 1. Find your release.**
+**Step 1. Rename the folder to `VEX-CAD-Library`.**
 
-Look at your library folder's name in Fusion's Data Panel. If you never
-renamed it, it ends with the release:
-`VEX-CAD-Fusion-360-Library-2.0.5` is release `v2.0.5`. The zip you
-downloaded has the same name. Write the release down now, because the next
-step changes the folder's name.
-
-Can't find it? Carry on and see
-[If you don't know your release](#if-you-dont-know-your-release) at step 3.
-
-**Step 2. Rename the folder to `VEX-CAD-Library`.**
-
-In the Data Panel, right-click your library folder, choose **Rename**, and
-type `VEX-CAD-Library`. Inside it you should see the library's own folders:
-Electronics, Field Elements, Hardware, Motion and Structure.
+1. In Fusion's Data Panel, find your library folder. Inside it you should
+   see the library's own folders: Electronics, Field Elements, Hardware,
+   Motion and Structure.
+2. Write down the folder's current name first. It often has the release in
+   it: `VEX-CAD-Fusion-360-Library-2.0.5` is release `v2.0.5`. You'll only
+   need it if Detent can't work the release out.
+3. Right-click the folder, choose **Rename**, and type `VEX-CAD-Library`.
 
 Renaming doesn't break your designs. They're linked to the parts
 themselves, not to the folder's name. To be sure, open one of your designs
@@ -115,24 +109,28 @@ If those five folders sit straight in your project with no folder around
 them, make a new folder called `VEX-CAD-Library` and move the five folders
 into it.
 
-**Step 3. Adopt.**
+**Step 2. Adopt.**
 
 1. Open **Sync Library**.
 2. **Library**: VEX CAD Library
 3. **Project**: the project your library is in
 4. **Folder**: `VEX-CAD-Library`
 5. **Action**: Adopt existing library
-6. **Installed release**: the release from step 1, for example `v2.0.5`.
-   This box appears once you pick Adopt.
-7. Click **OK**. Detent reads your folders, which takes a few minutes, then
-   shows a box. Check two things in it:
-   - The first line ends with your release, for example `at v2.0.5`. If it
-     says `at unknown`, the Installed release box was empty.
+6. **Installed release**: leave it blank. Detent works out your release from
+   the parts in your folder. (If you know it, you can type it, for example
+   `v2.0.5`.)
+7. Click **OK**. Detent reads the releases on GitHub and your folders, which
+   takes a few minutes, then shows a box. Check two things in it:
+   - The first line names a release, for example `at v2.0.5`, and the next
+     line says `Worked out from the parts in your folder`.
    - `matched` is close to `files in that release`. If it's much lower,
      check that the Folder is right.
 8. Click **Yes**. This uploads nothing. It only records what you have.
 
-**Step 4. Get what's new.**
+If the release looks wrong, click **No** instead, and run Adopt again with
+your release typed in Installed release.
+
+**Step 3. Get what's new.**
 
 1. Open **Sync Library**.
 2. **Action**: Sync now → **OK**
@@ -140,16 +138,21 @@ into it.
 
 From now on, run Sync now whenever a new release comes out.
 
-#### If you don't know your release
+#### If Detent can't tell which release you have
 
-Leave Installed release blank in step 3. Adopt still works, and Sync now
-still adds new parts without uploading the ones you have.
+It tells every VEX CAD release so far apart by which parts are in your
+folder. Two cases need you:
 
-What you lose: Detent can't tell which version of each of your parts you
-have, so it marks them `unverified`. Sync now and Preview show a line like
-`? 1198 unverified` every time, and if a later release changes one of those
-parts, Detent won't tell you. To clear it, run step 3 again with the release
-filled in.
+- **It can't find any release that matches.** The box says so, and your
+  parts are recorded as `unverified`.
+- **Two releases have the same parts, but some parts changed between
+  them.** Detent records just those parts as `unverified`, and the box
+  says how many.
+
+Unverified parts are never uploaded again, and Sync now still adds new
+parts. But Sync now and Preview show a line like `? 12 unverified` every
+time, and Detent won't tell you if a later release changes those parts. To
+clear it, run step 2 again with your release typed in Installed release.
 
 ## Updating
 
@@ -275,13 +278,16 @@ Here is each one for a real update, v2.0.4 to v2.0.5. It added 25 parts
 | Download | 2.3 GB | 123 MB | 123 MB |
 | Parts Fusion has to import | 1,198 | 25 | 25 |
 | Your time | 30 s | 1 min 5 s | 10 s |
-| Total time | 43 min | 3 min 20 s | 2 min 35 s |
+| Total time, until the parts are in Fusion | 43 min | 3 min 20 s | 2 min 35 s |
 | Parts you already had, imported again | 1,173 | 0 | 0 |
 | Someone has to build the zip first | no | yes | no |
 
 - **Against the full zip, Detent takes about 94% less time.** It downloads
   95% less and gives Fusion 98% fewer parts to import. Most of the 43 minutes
   is the download: 32 minutes for the zip, then 10 for the import.
+- **Detent itself is done in about 19 seconds.** The rest is Fusion
+  uploading the parts in the background, as it does after any upload. You
+  can keep working while it does.
 - **Against the small zip, Detent takes about 85% less of your time:** three
   clicks, instead of making five folders and filling them. The total is about
   20% less, because Fusion needs the same two minutes to import the same 25
@@ -298,6 +304,8 @@ Measured on one Mac on a home connection, September and October 2026:
 - GitHub's zip of the whole library downloaded in 32 min 14 s.
 - Fusion Batch Import put its 1,165 parts into Fusion in 10 min 17 s.
 - Through Detent, Fusion imported the 25 parts of v2.0.5 in 2 min 8 s.
+- Detent's own part of a 33-part update (v2.0.3 to v2.0.5, 251 MB) took
+  19 s: 4 s making folders, 11 s downloading, 4 s handing parts to Fusion.
 - Detent downloaded at 117 Mbit/s.
 
 The full zip was timed on v2.0.3, which is a little smaller than v2.0.5
