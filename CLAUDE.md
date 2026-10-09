@@ -84,6 +84,8 @@ One line per commit, oldest first.
 - `feat(ui): rename the check to Verify Integrity and describe each action in the dialog`
 - `perf(sync): don't wait for Fusion to confirm uploads` — a 19-second update took 2 minutes and confirmed nothing.
 - `docs(readme): explain Installed release and unverified parts for Adopt` — a full-size Adopt was run with the box empty, and `? 1198 unverified` never went away.
+- `feat(config): default folder is VEX-CAD-Library` — one folder name for everyone, to go with the fresh-copy advice.
+- `docs(readme): recommend a fresh copy in VEX-CAD-Library over Adopt` — Adopt needs the release number, which people don't know.
 
 ## Push
 

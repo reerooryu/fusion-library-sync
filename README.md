@@ -53,14 +53,16 @@ Detent is now at **Utilities → ADD-INS → Sync Library**.
 
 ## First sync
 
-Pick the one that fits you.
+### Recommended: a fresh copy in `VEX-CAD-Library`
 
-### I don't have the library yet, or I want a fresh copy (recommended)
+Do this even if you already have the library. You don't need to know which
+release you have, and Detent tracks every part from the start.
 
 1. Open **Sync Library**.
 2. **Library**: VEX CAD Library
 3. **Project**: the project you want it in
-4. **Folder**: a folder that doesn't exist yet, e.g. `VEX CAD Library`
+4. **Folder**: `VEX-CAD-Library`. New installs fill this in for you.
+   Detent makes the folder.
 5. **Action**: Sync now → **OK**
 6. Check the list it shows you, then click **Yes**.
 
@@ -70,10 +72,17 @@ then uploads the parts in the background, so the done box says most of them
 are `still uploading`. **Keep Fusion open until its uploads finish.** The
 next time you run Sync now, Detent confirms them. Nothing is uploaded twice.
 
+**Already have an old copy?** Keep it. Designs that use its parts still
+point to those files, and deleting it breaks them. Use `VEX-CAD-Library` for
+new designs. Once nothing uses the old folder, you can delete it.
+
 To try a small part first, see
 [Sync part of the library](#sync-part-of-the-library).
 
-### I already have the library
+### Or: keep using the copy you have
+
+Only if you need new parts to land in the folder you already use. Otherwise,
+use the fresh copy above.
 
 1. Open **Sync Library**.
 2. **Library**: VEX CAD Library
