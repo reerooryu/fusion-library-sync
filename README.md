@@ -144,10 +144,12 @@ Detent works out your release from which parts are in your folder. Names
 can't show which version of a part you have, so two cases need you:
 
 - **A part changed in a past release.** For example, v2.0.6 changed
-  `LS Shaft` and `HS Shaft`. Detent assumes you have the older version and
-  lists those parts as `changed upstream`, and the Adopt box says how many.
-  If you installed that release in full, run step 2 again with the release
-  typed in Installed release.
+  `LS Shaft` and `HS Shaft`. Detent assumes you have the older version, and
+  the Adopt box says how many. The next Sync now lists them once, with how
+  to update them (see
+  [When a release changes a part you have](#when-a-release-changes-a-part-you-have)).
+  If you installed that release in full, you can skip that by typing the
+  release in Installed release.
 - **It can't find any release that matches.** The box says so, and your
   parts are recorded as `unverified`. Sync now still adds new parts, but
   shows a line like `? 12 unverified` every time. Run step 2 again with
@@ -159,6 +161,28 @@ them too, so Sync now won't try to add them again.
 ## Updating
 
 **New library release:** Sync Library → Sync now.
+
+### When a release changes a part you have
+
+Sometimes a release changes a part you already have. v2.0.6 did this to
+`LS Shaft` and `HS Shaft`: they gained a `shaft_length` parameter.
+
+Detent never replaces a part you have. Swapping a part for a different file
+breaks the designs that use it. Instead, Sync now lists those parts under
+`Changed upstream`, once. After that it stops listing them.
+
+You can keep your copy. Nothing breaks. Or update it:
+
+1. Download the library's [latest release](https://github.com/VEX-CAD/VEX-CAD-Fusion-360-Library/releases/latest)
+   and unzip it. The new part is in the same folder as in Fusion. In a
+   small zip of only the new parts, it's under `Updated parts (optional)`.
+2. In Fusion's Data Panel, right-click your copy of the part and choose
+   **Import New Change**. Pick the new file from the unzipped folder.
+   Fusion adds it as a new version of the same part, so you still have one
+   copy, not two.
+3. Open each design that uses the part. Fusion says a reference is out of
+   date. Click **Get Latest** on the part in the browser, or
+   **Get All Latest** in the top bar. Joints are kept.
 
 **New version of Detent:** on Windows, download the zip again and drag it over
 the old folder. On Mac, run the `curl` line again. Your settings are kept.
@@ -227,11 +251,9 @@ a log). Neither holds any parts.
 
 - **It won't replace parts you already have.** If a release edits an existing
   part, Detent lists it under "Changed upstream" and leaves your copy alone.
-  Fusion can't swap in a new version of a part without breaking the joints
-  in designs that use it. If you want the new version, update your copy
-  yourself. When you're done, or if you decide to keep the old one, run
-  Adopt with the newest release typed in Installed release, and Detent stops
-  listing it.
+  Swapping in a different file would break the designs that use it. Sync
+  now lists the part once instead. To update it yourself, see
+  [When a release changes a part you have](#when-a-release-changes-a-part-you-have).
 - **It won't delete.** Parts removed from the library stay in your project.
 - **Changing the Folder after a sync uploads a second full copy** into the new
   folder. Detent asks before doing this.

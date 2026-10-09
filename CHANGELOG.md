@@ -10,13 +10,14 @@ Use the latest release. Older releases are kept for reference and marked broken.
 - Adopt works out which release you have from the parts in your folder.
   Leave Installed release blank. It tells every VEX CAD release so far
   apart. Names can't show which version of a part you have, so a part that
-  changed in a past release is assumed to be the older version and listed
-  as changed upstream. Typing the release clears that.
+  changed in a past release is assumed to be the older version, so the
+  next Sync now tells you about it. Typing the release skips that.
 - Adopt records every library part in your folder, including parts from a
   newer release you added by hand. Before, typing an older release left
   those out, and Sync now listed them as `NAME TAKEN` on every run.
-- "Changed upstream" says how to stop listing a part: run Adopt with the
-  newest release typed in.
+- Parts that changed upstream are listed once, in the Sync now box, with
+  how to update them (Import New Change in Fusion, then Get Latest). After
+  that, Detent stops listing them. It still never replaces a part you have.
 - Fixed: files that were still uploading could be recorded under a temporary
   local path instead of their Fusion ID. The next Preview then listed them as
   "missing but the name is taken". Detent now records only real Fusion IDs,
