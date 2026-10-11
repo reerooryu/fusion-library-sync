@@ -552,7 +552,8 @@ def apply_plan(plan: PL.Plan, selected: Dict[str, str], src: gh.Source,
                 # Not sent, not recorded: the next sync tries it again.
                 report.failures.append((pp.repo_path, str(exc)))
                 continue
-            manifest.mark_inflight(pp.repo_path, placed_name=pp.name)
+            manifest.mark_inflight(pp.repo_path, placed_name=pp.name,
+                                   blob=selected.get(pp.repo_path))
             manifest.save(manifest_path)
 
             sent += 1

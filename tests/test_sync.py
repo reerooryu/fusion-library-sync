@@ -3245,3 +3245,37 @@ class TestAdoptEditedParts:
                settle_wait=0)
         after = Manifest.load(mpath)
         assert {p: after.files[p].lineage for p in self.EDITED} == before
+
+
+class TestConfirmLaterKeepsTheUploadedVersion:
+    """Detent doesn't wait for Fusion, so an upload is confirmed on a later
+    run. If a new release edits that part in between, the record must keep
+    the version that was uploaded, not the new one (found in the 11 Oct
+    rehearsal: v2.0.5 shafts were recorded as v2.0.6)."""
+
+    def test_confirmed_after_a_new_release_shows_as_changed(
+            self, small_tree, src, tmp_path):
+        edited = sorted(small_tree)[0]
+        newer = dict(small_tree)
+        newer[edited] = "edited-" + edited
+        panel = FakeDataPanel(temp_ids=10_000)   # uploads stay unconfirmed
+        mpath = str(tmp_path / "m.json")
+
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+               dry_run=False, settle_wait=0)
+        assert Manifest.load(mpath).get(edited).state == INFLIGHT
+
+        panel.temp_ids = 0                        # Fusion has finished
+        plan, _rep = S.sync(src, mpath, panel, FakeTransport(newer), F3D,
+                            recheck=True)         # what Verify Integrity does
+        assert Manifest.load(mpath).get(edited).blob == small_tree[edited]
+        assert plan.change == [edited]
+
+    def test_the_uploaded_version_is_noted_before_confirming(
+            self, small_tree, src, tmp_path):
+        panel = FakeDataPanel(temp_ids=10_000)
+        mpath = str(tmp_path / "m.json")
+        S.sync(src, mpath, panel, FakeTransport(small_tree), F3D,
+               dry_run=False, settle_wait=0)
+        m = Manifest.load(mpath)
+        assert all(m.get(p).blob == small_tree[p] for p in small_tree)

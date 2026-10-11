@@ -55,10 +55,13 @@ class Manifest:
         return {p: e for p, e in self.files.items() if e.state == state}
 
     # ---- changes -------------------------------------------------------
-    def mark_inflight(self, repo_path: str, placed_name: Optional[str] = None) -> None:
-        """Called before an upload, so a crash leaves a record."""
+    def mark_inflight(self, repo_path: str, placed_name: Optional[str] = None,
+                      blob: Optional[str] = None) -> None:
+        """Called before an upload, so a crash leaves a record. `blob` is the
+        version being uploaded. The upload may be confirmed on a later run,
+        after a newer release, so the record must keep this one."""
         self.files[repo_path] = Entry(
-            state=INFLIGHT, at=_now(), placed_name=placed_name
+            blob=blob, state=INFLIGHT, at=_now(), placed_name=placed_name
         )
 
     def record(self, repo_path: str, blob: str, lineage: str,

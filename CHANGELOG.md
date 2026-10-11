@@ -15,6 +15,9 @@ Use the latest release. Older releases are kept for reference and marked broken.
 - Adopt records every library part in your folder, including parts from a
   newer release you added by hand. Before, typing an older release left
   those out, and Sync now listed them as `NAME TAKEN` on every run.
+- Fixed: a part still uploading when a newer release edited it was
+  recorded as the new version when it was confirmed. Detent now notes which
+  version it uploaded.
 - Parts that changed upstream are listed once, in the Sync now box, with
   how to update them (Import New Change in Fusion, then Get Latest). After
   that, Detent stops listing them. It still never replaces a part you have.
