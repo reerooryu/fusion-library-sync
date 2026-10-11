@@ -136,6 +136,10 @@ your release typed in Installed release.
 2. **Action**: Sync now → **OK**
 3. It lists the parts released after yours. Click **Yes**.
 
+It may also list a few parts under `Changed upstream`. Those are parts you
+already have that a newer release changed. Detent leaves them alone. See
+[When a release changes a part you have](#when-a-release-changes-a-part-you-have).
+
 From now on, run Sync now whenever a new release comes out.
 
 #### What Detent can't tell from names
@@ -173,16 +177,24 @@ breaks the designs that use it. Instead, Sync now lists those parts under
 
 You can keep your copy. Nothing breaks. Or update it:
 
-1. Download the library's [latest release](https://github.com/VEX-CAD/VEX-CAD-Fusion-360-Library/releases/latest)
-   and unzip it. The new part is in the same folder as in Fusion. In a
-   small zip of only the new parts, it's under `Updated parts (optional)`.
+1. Download the new file. You only need that one part, not the whole
+   library:
+   - For v2.0.6:
+     [LS Shaft.f3d](https://github.com/VEX-CAD/VEX-CAD-Fusion-360-Library/raw/main/Motion/LS%20Shaft.f3d)
+     and
+     [HS Shaft.f3d](https://github.com/VEX-CAD/VEX-CAD-Fusion-360-Library/raw/main/Motion/HS%20Shaft.f3d).
+   - For any part: open the
+     [library on GitHub](https://github.com/VEX-CAD/VEX-CAD-Fusion-360-Library),
+     go to the part's folder, click the file, then click
+     **Download raw file** (the download arrow, top right).
 2. In Fusion's Data Panel, right-click your copy of the part and choose
-   **Import New Change**. Pick the new file from the unzipped folder.
-   Fusion adds it as a new version of the same part, so you still have one
-   copy, not two.
-3. Open each design that uses the part. Fusion says a reference is out of
-   date. Click **Get Latest** on the part in the browser, or
-   **Get All Latest** in the top bar. Joints are kept.
+   **Import New Change**. Pick the file you downloaded. Fusion adds it as a
+   new version of the same part, so you still have one copy, not two.
+   Don't upload it as a new file next to the old one: you'd have two parts
+   with the same name.
+3. The next time you open a design that uses the part, Fusion says a
+   reference is out of date. Click **Get Latest** on the part in the
+   browser, or **Get All Latest** in the top bar. Joints are kept.
 
 **New version of Detent:** on Windows, download the zip again and drag it over
 the old folder. On Mac, run the `curl` line again. Your settings are kept.
